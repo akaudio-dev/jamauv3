@@ -1,0 +1,24 @@
+{
+  "originHash" : "06022180e924fb61944bc6a5a02ed517c409338152b89ac2511aaf989a5f1bce",
+  "pins" : [
+    {
+      "identity" : "swift-ogg",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/readdle/swift-ogg.git",
+      "state" : {
+        "revision" : "48bb006ce827b375c69b099c0b19cd9c3709838d",
+        "version" : "1.3.5"
+      }
+    },
+    {
+      "identity" : "swift-vorbis",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/readdle/swift-vorbis.git",
+      "state" : {
+        "revision" : "fc3a7fa08fc8ad0ab2ebcc3a7c85c981ca55467d",
+        "version" : "1.3.7"
+      }
+    }
+  ],
+  "version" : 3
+}

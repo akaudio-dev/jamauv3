@@ -6,5 +6,5 @@
 //
 
 #import "jamauv3ExtensionParameterAddresses.h"
-#import "jamauv3ExtensionAUProcessHelper.hpp"
-#import "OggDecoder.h"
+
+// Note: C++ DSP headers removed - DSP is now pure Swift

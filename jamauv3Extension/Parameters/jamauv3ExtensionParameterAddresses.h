@@ -9,6 +9,5 @@
 
 #include <AudioToolbox/AUParameters.h>
 
-typedef NS_ENUM(AUParameterAddress, jamauv3ExtensionParameterAddress) {
-    gain = 0
-};
+// Parameter addresses as simple constants (C-compatible)
+static const AUParameterAddress jamauv3ExtensionParameterAddress_gain = 0;
