@@ -96,14 +96,21 @@ class ObservableAUParameterNode {
 final class ObservableAUParameterGroup: ObservableAUParameterNode {
 
     private(set) var children: [String: ObservableAUParameterNode]
+    private(set) var orderedChildren: [ObservableAUParameterNode]
 
     init(_ parameterGroup: AUParameterGroup) {
+        orderedChildren = parameterGroup.children.map { ObservableAUParameterNode.create($0) }
         children = parameterGroup.children.reduce(
             into: [String: ObservableAUParameterNode]()
         ) { dict, node in
             let observableNode = ObservableAUParameterNode.create(node)
             dict[node.identifier] = observableNode
         }
+    }
+
+    /// Returns all child parameters (not groups) as ObservableAUParameter array
+    var parameters: [ObservableAUParameter] {
+        orderedChildren.compactMap { $0 as? ObservableAUParameter }
     }
 }
 

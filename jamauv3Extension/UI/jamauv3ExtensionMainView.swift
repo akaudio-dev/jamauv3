@@ -9,9 +9,9 @@ import SwiftUI
 
 struct jamauv3ExtensionMainView: View {
     var parameterTree: ObservableAUParameterGroup
-    
+
     @ObservedObject var connectionSettings: ConnectionSettings
-    @ObservedObject var connectionManager: ConnectionManager
+    @ObservedObject var ninjamClient: NINJAMClient
 
     var body: some View {
         VStack(spacing: 16) {
@@ -24,43 +24,43 @@ struct jamauv3ExtensionMainView: View {
                 HStack(spacing: 8) {
                     TextField("Server", text: $connectionSettings.serverName)
                         .textFieldStyle(.roundedBorder)
-                        .disabled(connectionManager.isConnected)
+                        .disabled(ninjamClient.isConnected)
                     
                     TextField("Port", text: $connectionSettings.port)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 80)
-                        .disabled(connectionManager.isConnected)
+                        .disabled(ninjamClient.isConnected)
                 }
                 
                 // Username
                 TextField("Username", text: $connectionSettings.username)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(connectionManager.isConnected)
+                    .disabled(ninjamClient.isConnected)
                 
                 // Password
                 SecureField("Password", text: $connectionSettings.password)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(connectionManager.isConnected)
+                    .disabled(ninjamClient.isConnected)
                 
                 // Connect/Disconnect button
                 Button(action: handleConnectionToggle) {
                     HStack {
-                        Image(systemName: connectionManager.isConnected ? "network.slash" : "network")
-                        Text(connectionManager.isConnected ? "Disconnect" : "Connect")
+                        Image(systemName: ninjamClient.isConnected ? "network.slash" : "network")
+                        Text(ninjamClient.isConnected ? "Disconnect" : "Connect")
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 8)
                 }
                 .buttonStyle(.borderedProminent)
-                .tint(connectionManager.isConnected ? .red : .blue)
+                .tint(ninjamClient.isConnected ? .red : .blue)
                 
                 // Connection status
                 HStack {
                     Circle()
-                        .fill(connectionManager.isConnected ? Color.green : Color.gray)
+                        .fill(ninjamClient.isConnected ? Color.green : Color.gray)
                         .frame(width: 8, height: 8)
                     
-                    Text(connectionManager.connectionStatus)
+                    Text(ninjamClient.connectionStatus)
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
@@ -68,7 +68,7 @@ struct jamauv3ExtensionMainView: View {
                 }
                 
                 // Error message if any
-                if let error = connectionManager.lastError {
+                if let error = ninjamClient.lastError {
                     Text(error)
                         .font(.caption)
                         .foregroundColor(.red)
@@ -79,12 +79,18 @@ struct jamauv3ExtensionMainView: View {
             
             Divider()
             
-            // Audio parameters section
+            // User gains mixer section
             VStack(alignment: .leading, spacing: 8) {
-                Text("Audio Parameters")
+                Text("User Gains")
                     .font(.headline)
-                
-                ParameterSlider(param: parameterTree.global.gain)
+
+                HStack(spacing: 8) {
+                    let usersGroup: ObservableAUParameterGroup = parameterTree.users
+                    ForEach(0..<usersGroup.parameters.count, id: \.self) { index in
+                        VerticalGainSlider(param: usersGroup.parameters[index])
+                    }
+                }
+                .frame(maxWidth: .infinity)
             }
             .padding()
             
@@ -94,23 +100,32 @@ struct jamauv3ExtensionMainView: View {
     }
     
     private func handleConnectionToggle() {
-        if connectionManager.isConnected {
+        if ninjamClient.isConnected {
             // Disconnect
-            connectionManager.disconnect()
+            ninjamClient.disconnect()
         } else {
             // Validate inputs
             guard !connectionSettings.serverName.isEmpty else {
                 return
             }
-            guard !connectionSettings.port.isEmpty else {
+            guard !connectionSettings.port.isEmpty,
+                  let portNumber = UInt16(connectionSettings.port) else {
                 return
             }
-            
+            guard !connectionSettings.username.isEmpty else {
+                return
+            }
+
             // Save settings when connecting
             connectionSettings.save()
-            
-            // Establish TCP connection
-            connectionManager.connect(to: connectionSettings.serverName, port: connectionSettings.port)
+
+            // Connect to NINJAM server
+            ninjamClient.connect(
+                host: connectionSettings.serverName,
+                port: portNumber,
+                username: connectionSettings.username,
+                password: connectionSettings.password
+            )
         }
     }
 }

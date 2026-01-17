@@ -10,13 +10,13 @@
 			<array>
 				<dict>
 					<key>description</key>
-					<string>jamauv3Extension</string>
+					<string>Jam AUv3</string>
 					<key>factoryFunction</key>
 					<string>$(PRODUCT_MODULE_NAME).AudioUnitViewController</string>
 					<key>manufacturer</key>
 					<string>jmv3</string>
 					<key>name</key>
-					<string>JamAUv3: jamauv3Extension</string>
+					<string>JamAUv3: Jam</string>
 					<key>sandboxSafe</key>
 					<true/>
 					<key>subtype</key>

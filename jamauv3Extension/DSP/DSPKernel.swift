@@ -14,9 +14,9 @@ import CoreMIDI
 final class DSPKernel: @unchecked Sendable {
     
     // MARK: - Properties
-    
+
     private(set) var sampleRate: Double = 44100.0
-    private var gain: Float = 1.0
+    private var userGains: [Float] = Array(repeating: 0.75, count: Int(jamauv3ExtensionNumUsers))
     private var noteEnvelope: Float = 1.0  // Initialize to 1.0 so audio passes through even without MIDI
     private var bypassed: Bool = false
     private var maxFramesToRender: AUAudioFrameCount = 1024
@@ -47,21 +47,18 @@ final class DSPKernel: @unchecked Sendable {
     // MARK: - Parameters
     
     func setParameter(address: AUParameterAddress, value: AUValue) {
-        switch address {
-        case jamauv3ExtensionParameterAddress_gain:
-            gain = value
-        default:
-            break
+        let index = Int(address - jamauv3ExtensionParameterAddress_userGainBase)
+        if index >= 0 && index < Int(jamauv3ExtensionNumUsers) {
+            userGains[index] = value
         }
     }
-    
+
     func getParameter(address: AUParameterAddress) -> AUValue {
-        switch address {
-        case jamauv3ExtensionParameterAddress_gain:
-            return AUValue(gain)
-        default:
-            return 0.0
+        let index = Int(address - jamauv3ExtensionParameterAddress_userGainBase)
+        if index >= 0 && index < Int(jamauv3ExtensionNumUsers) {
+            return AUValue(userGains[index])
         }
+        return 0.0
     }
     
     // MARK: - Max Frames
@@ -111,9 +108,9 @@ final class DSPKernel: @unchecked Sendable {
             let inputFloats = inputData.assumingMemoryBound(to: Float.self)
             let outputFloats = outputData.assumingMemoryBound(to: Float.self)
             
-            // Apply gain and envelope per sample
+            // Apply envelope per sample (user gains will be applied when mixing remote streams)
             for frameIndex in 0..<Int(frameCount) {
-                outputFloats[frameIndex] = inputFloats[frameIndex] * noteEnvelope * gain
+                outputFloats[frameIndex] = inputFloats[frameIndex] * noteEnvelope
             }
         }
     }

@@ -7,35 +7,28 @@
 
 import SwiftUI
 
-/// A SwiftUI Slider container which is bound to an ObservableAUParameter
-///
-/// This view wraps a SwiftUI Slider, and provides it relevant data from the Parameter, like the minimum and maximum values.
-struct ParameterSlider: View {
+/// A SwiftUI vertical Slider for user gain control
+struct VerticalGainSlider: View {
     @State var param: ObservableAUParameter
-    
-    var specifier: String {
-        switch param.unit {
-        case .midiNoteNumber:
-            return "%.0f"
-        default:
-            return "%.2f"
-        }
-    }
-    
+
     var body: some View {
-        VStack {
+        VStack(spacing: 4) {
+            Text(param.displayName)
+                .font(.caption2)
+                .lineLimit(1)
+
             Slider(
                 value: $param.value,
                 in: param.min...param.max,
-                onEditingChanged: param.onEditingChanged,
-                minimumValueLabel: Text("\(param.min, specifier: specifier)"),
-                maximumValueLabel: Text("\(param.max, specifier: specifier)")
-            ) {
-                EmptyView()
-            }
-            .accessibility(identifier: param.displayName)
-            Text("\(param.displayName): \(param.value, specifier: specifier)")
+                onEditingChanged: param.onEditingChanged
+            )
+            .rotationEffect(.degrees(-90))
+            .frame(width: 30, height: 100)
+
+            Text("\(Int(param.value * 100))%")
+                .font(.caption2)
+                .monospacedDigit()
         }
-        .padding()
+        .frame(width: 44)
     }
 }

@@ -8,6 +8,7 @@
 import Foundation
 import Network
 import os.log
+import Combine
 
 // MARK: - Client State
 
@@ -45,13 +46,19 @@ extension NINJAMClientDelegate {
 // MARK: - NINJAM Client
 
 /// Main NINJAM client class
-final class NINJAMClient: Sendable {
+@MainActor
+final class NINJAMClient: ObservableObject {
 
     // MARK: - Properties
 
-    @MainActor weak var delegate: NINJAMClientDelegate?
+    weak var delegate: NINJAMClientDelegate?
 
-    struct ServerInfo: Sendable {
+    // Published properties for SwiftUI binding
+    @Published var isConnected: Bool = false
+    @Published var connectionStatus: String = "Not connected"
+    @Published var lastError: String?
+
+    struct ServerInfo {
         let host: String
         let port: UInt16
         var bpm: Int = 120
@@ -60,35 +67,22 @@ final class NINJAMClient: Sendable {
         var effectiveUsername: String?
     }
 
-    // Thread-safe state using actor-like pattern with a lock
-    private let lock = NSLock()
-    private var _state: NINJAMConnectionState = .disconnected
-    private var _serverInfo: ServerInfo?
-    private var _receiveBuffer = Data()
-    private var _keepaliveInterval: Int = 3
-    private var _lastSendTime: Date = Date()
-    private var _lastReceiveTime: Date = Date()
-    private var _username: String = ""
-    private var _password: String = ""
-
-    var state: NINJAMConnectionState {
-        lock.lock()
-        defer { lock.unlock() }
-        return _state
-    }
-
-    var serverInfo: ServerInfo? {
-        lock.lock()
-        defer { lock.unlock() }
-        return _serverInfo
-    }
+    // State - now directly accessible since we're @MainActor
+    private var state: NINJAMConnectionState = .disconnected
+    private var serverInfo: ServerInfo?
+    private var receiveBuffer = Data()
+    private var keepaliveInterval: Int = 3
+    private var lastSendTime: Date = Date()
+    private var lastReceiveTime: Date = Date()
+    private var username: String = ""
+    private var password: String = ""
 
     // Connection
     private var connection: NWConnection?
     private let connectionQueue = DispatchQueue(label: "com.jamauv3.ninjam.connection")
 
     // Keepalive timer runs on main thread
-    @MainActor private var keepaliveTimer: Timer?
+    private var keepaliveTimer: Timer?
 
     private let logger = Logger(subsystem: "com.jamauv3", category: "NINJAMClient")
 
@@ -100,20 +94,38 @@ final class NINJAMClient: Sendable {
         connection?.cancel()
     }
 
-    // MARK: - State Management (thread-safe)
+    // MARK: - State Management
 
     private func setState(_ newState: NINJAMConnectionState) {
-        let oldState: NINJAMConnectionState
-        lock.lock()
-        oldState = _state
-        _state = newState
-        lock.unlock()
+        let oldState = state
+        state = newState
+
+        // Update UI properties
+        switch newState {
+        case .disconnected:
+            isConnected = false
+            connectionStatus = "Disconnected"
+        case .connecting:
+            isConnected = false
+            connectionStatus = "Connecting..."
+        case .awaitingChallenge:
+            isConnected = false
+            connectionStatus = "Awaiting server challenge..."
+        case .authenticating:
+            isConnected = false
+            connectionStatus = "Authenticating..."
+        case .connected:
+            isConnected = true
+            connectionStatus = "Connected"
+            lastError = nil
+        case .error(let message):
+            isConnected = false
+            connectionStatus = "Error"
+            lastError = message
+        }
 
         if newState != oldState {
-            Task { @MainActor [weak self] in
-                guard let self = self else { return }
-                self.delegate?.client(self, didChangeState: newState)
-            }
+            delegate?.client(self, didChangeState: newState)
         }
     }
 
@@ -121,18 +133,15 @@ final class NINJAMClient: Sendable {
 
     /// Connect to a NINJAM server
     func connect(host: String, port: UInt16 = NJ_PORT, username: String, password: String) {
-        lock.lock()
-        guard _state == .disconnected else {
-            lock.unlock()
+        guard state == .disconnected else {
             logger.warning("Already connecting or connected")
             return
         }
 
-        _username = username
-        _password = password
-        _serverInfo = ServerInfo(host: host, port: port)
-        _state = .connecting
-        lock.unlock()
+        self.username = username
+        self.password = password
+        self.serverInfo = ServerInfo(host: host, port: port)
+        setState(.connecting)
 
         let endpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(host),
@@ -150,33 +159,29 @@ final class NINJAMClient: Sendable {
         connection = NWConnection(to: endpoint, using: parameters)
 
         connection?.stateUpdateHandler = { [weak self] newState in
-            self?.handleConnectionStateChange(newState)
+            Task { @MainActor in
+                self?.handleConnectionStateChange(newState)
+            }
         }
 
         connection?.start(queue: connectionQueue)
 
-        // Start keepalive on main thread
-        Task { @MainActor [weak self] in
-            self?.startKeepaliveTimer()
-        }
+        // Start keepalive timer
+        startKeepaliveTimer()
     }
 
     /// Disconnect from the server
     func disconnect() {
-        // Stop keepalive timer on main thread
-        Task { @MainActor [weak self] in
-            self?.keepaliveTimer?.invalidate()
-            self?.keepaliveTimer = nil
-        }
+        // Stop keepalive timer
+        keepaliveTimer?.invalidate()
+        keepaliveTimer = nil
 
         connection?.cancel()
         connection = nil
 
-        lock.lock()
-        _receiveBuffer.removeAll()
-        _serverInfo = nil
-        _state = .disconnected
-        lock.unlock()
+        receiveBuffer.removeAll()
+        serverInfo = nil
+        setState(.disconnected)
     }
 
     // MARK: - Connection State Handling
@@ -211,23 +216,26 @@ final class NINJAMClient: Sendable {
             guard let self = self else { return }
 
             if let error = error {
-                self.logger.error("Receive error: \(error.localizedDescription)")
-                self.setState(.error("Receive error: \(error.localizedDescription)"))
+                Task { @MainActor in
+                    self.logger.error("Receive error: \(error.localizedDescription)")
+                    self.setState(.error("Receive error: \(error.localizedDescription)"))
+                }
                 return
             }
 
             if let data = data, !data.isEmpty {
-                self.lock.lock()
-                self._lastReceiveTime = Date()
-                self._receiveBuffer.append(data)
-                self.lock.unlock()
-
-                self.processReceivedData()
+                Task { @MainActor in
+                    self.lastReceiveTime = Date()
+                    self.receiveBuffer.append(data)
+                    self.processReceivedData()
+                }
             }
 
             if isComplete {
-                self.logger.info("Connection closed by server")
-                self.setState(.disconnected)
+                Task { @MainActor in
+                    self.logger.info("Connection closed by server")
+                    self.setState(.disconnected)
+                }
             } else {
                 // Continue receiving
                 self.startReceiving()
@@ -238,14 +246,11 @@ final class NINJAMClient: Sendable {
     private func processReceivedData() {
         // Process all complete messages in the buffer
         while true {
-            lock.lock()
-            guard _receiveBuffer.count >= NINJAMMessageHeader.size else {
-                lock.unlock()
+            guard receiveBuffer.count >= NINJAMMessageHeader.size else {
                 return
             }
 
-            guard let header = NINJAMMessageHeader(data: _receiveBuffer) else {
-                lock.unlock()
+            guard let header = NINJAMMessageHeader(data: receiveBuffer) else {
                 logger.error("Invalid message header")
                 setState(.error("Invalid message header"))
                 return
@@ -253,8 +258,7 @@ final class NINJAMClient: Sendable {
 
             let totalLength = NINJAMMessageHeader.size + Int(header.payloadLength)
 
-            guard _receiveBuffer.count >= totalLength else {
-                lock.unlock()
+            guard receiveBuffer.count >= totalLength else {
                 // Need more data
                 return
             }
@@ -262,11 +266,10 @@ final class NINJAMClient: Sendable {
             // Extract payload
             let payloadStart = NINJAMMessageHeader.size
             let payloadEnd = payloadStart + Int(header.payloadLength)
-            let payload = _receiveBuffer.subdata(in: payloadStart..<payloadEnd)
+            let payload = receiveBuffer.subdata(in: payloadStart..<payloadEnd)
 
             // Remove processed message from buffer
-            _receiveBuffer.removeSubrange(0..<totalLength)
-            lock.unlock()
+            receiveBuffer.removeSubrange(0..<totalLength)
 
             // Handle the message
             handleMessage(type: header.type, payload: payload)
@@ -323,11 +326,9 @@ final class NINJAMClient: Sendable {
             return
         }
 
-        lock.lock()
-        _keepaliveInterval = challenge.keepaliveInterval > 0 ? challenge.keepaliveInterval : 3
-        let username = _username
-        let password = _password
-        lock.unlock()
+        keepaliveInterval = challenge.keepaliveInterval > 0 ? challenge.keepaliveInterval : 3
+        let username = self.username
+        let password = self.password
 
         // Handle license agreement - for now, auto-agree
         let agreesToLicense = true
@@ -354,12 +355,10 @@ final class NINJAMClient: Sendable {
         }
 
         if reply.isSuccess {
-            lock.lock()
-            _serverInfo?.maxChannels = Int(reply.maxChannels)
+            serverInfo?.maxChannels = Int(reply.maxChannels)
             if let effectiveUsername = reply.effectiveUsername {
-                _serverInfo?.effectiveUsername = effectiveUsername
+                serverInfo?.effectiveUsername = effectiveUsername
             }
-            lock.unlock()
 
             if let effectiveUsername = reply.effectiveUsername {
                 logger.info("Server assigned username: \(effectiveUsername)")
@@ -385,17 +384,12 @@ final class NINJAMClient: Sendable {
             return
         }
 
-        lock.lock()
-        _serverInfo?.bpm = Int(config.beatsPerMinute)
-        _serverInfo?.bpi = Int(config.beatsPerInterval)
-        lock.unlock()
+        serverInfo?.bpm = Int(config.beatsPerMinute)
+        serverInfo?.bpi = Int(config.beatsPerInterval)
 
         logger.info("Config: BPM=\(config.beatsPerMinute), BPI=\(config.beatsPerInterval), interval=\(config.intervalDuration)s")
 
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            self.delegate?.client(self, didReceiveConfig: Int(config.beatsPerMinute), bpi: Int(config.beatsPerInterval))
-        }
+        delegate?.client(self, didReceiveConfig: Int(config.beatsPerMinute), bpi: Int(config.beatsPerInterval))
     }
 
     private func handleUserInfoChange(_ payload: Data) {
@@ -409,10 +403,7 @@ final class NINJAMClient: Sendable {
             logger.debug("  \(channel.username)/\(channel.channelName) active=\(channel.isActive)")
         }
 
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            self.delegate?.client(self, didReceiveUserInfo: userInfo.channels)
-        }
+        delegate?.client(self, didReceiveUserInfo: userInfo.channels)
     }
 
     private func handleDownloadIntervalBegin(_ payload: Data) {
@@ -423,10 +414,7 @@ final class NINJAMClient: Sendable {
 
         logger.debug("Audio begin: \(begin.username) ch\(begin.channelIndex) size=\(begin.estimatedSize)")
 
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            self.delegate?.client(self, didReceiveAudioBegin: begin.guid, username: begin.username, channelIndex: Int(begin.channelIndex))
-        }
+        delegate?.client(self, didReceiveAudioBegin: begin.guid, username: begin.username, channelIndex: Int(begin.channelIndex))
     }
 
     private func handleDownloadIntervalWrite(_ payload: Data) {
@@ -435,10 +423,7 @@ final class NINJAMClient: Sendable {
             return
         }
 
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            self.delegate?.client(self, didReceiveAudioData: write.guid, data: write.audioData, isEnd: write.isEndOfInterval)
-        }
+        delegate?.client(self, didReceiveAudioData: write.guid, data: write.audioData, isEnd: write.isEndOfInterval)
     }
 
     private func handleChatMessage(_ payload: Data) {
@@ -462,10 +447,7 @@ final class NINJAMClient: Sendable {
             logger.debug("Unknown chat: \(params)")
         }
 
-        Task { @MainActor [weak self] in
-            guard let self = self else { return }
-            self.delegate?.client(self, didReceiveChatMessage: chat)
-        }
+        delegate?.client(self, didReceiveChatMessage: chat)
     }
 
     // MARK: - Sending
@@ -475,9 +457,9 @@ final class NINJAMClient: Sendable {
             if let error = error {
                 self?.logger.error("Send error: \(error.localizedDescription)")
             } else {
-                self?.lock.lock()
-                self?._lastSendTime = Date()
-                self?.lock.unlock()
+                Task { @MainActor in
+                    self?.lastSendTime = Date()
+                }
             }
         })
     }
@@ -508,7 +490,6 @@ final class NINJAMClient: Sendable {
 
     // MARK: - Keepalive
 
-    @MainActor
     private func startKeepaliveTimer() {
         keepaliveTimer?.invalidate()
         keepaliveTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
@@ -517,12 +498,6 @@ final class NINJAMClient: Sendable {
     }
 
     private func checkKeepalive() {
-        lock.lock()
-        let keepaliveInterval = _keepaliveInterval
-        let lastSendTime = _lastSendTime
-        let lastReceiveTime = _lastReceiveTime
-        lock.unlock()
-
         let now = Date()
 
         // Send keepalive if we haven't sent anything recently

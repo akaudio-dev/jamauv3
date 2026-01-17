@@ -21,7 +21,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
     private var observation: NSKeyValueObservation?
     
     private let connectionSettings = ConnectionSettings()
-    private let connectionManager = ConnectionManager()
+    private let ninjamClient = NINJAMClient()
 
 	/* iOS View lifcycle
 	public override func viewWillAppear(_ animated: Bool) {
@@ -112,7 +112,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         let content = jamauv3ExtensionMainView(
             parameterTree: observableParameterTree,
             connectionSettings: connectionSettings,
-            connectionManager: connectionManager
+            ninjamClient: ninjamClient
         )
         let host = HostingController(rootView: content)
         self.addChild(host)

@@ -254,14 +254,16 @@ struct ClientAuthUserTests {
         // Check header
         #expect(message[0] == 0x80)  // AUTH_USER type
 
-        // Payload should contain: 20 bytes hash + 4 bytes caps + 4 bytes version + "user\0"
-        let expectedPayloadSize = 20 + 4 + 4 + 5  // 33 bytes
+        // Extract payload size from header
         let payloadSize = UInt32(message[1]) |
                          (UInt32(message[2]) << 8) |
                          (UInt32(message[3]) << 16) |
                          (UInt32(message[4]) << 24)
 
-        #expect(payloadSize == UInt32(expectedPayloadSize))
+        // Payload should contain: 20 bytes hash + "user\0" + 4 bytes caps + 4 bytes version
+        // Per NINJAM protocol: passhash(20) + username(NUL) + caps(4) + version(4)
+        let expectedPayloadSize: UInt32 = 20 + 5 + 4 + 4  // 33 bytes
+        #expect(payloadSize == expectedPayloadSize)
     }
 
     @Test("Client caps flags")

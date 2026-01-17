@@ -382,6 +382,10 @@ public struct ClientAuthUser {
         // Password hash (20 bytes)
         data.append(passwordHash)
 
+        // Username (null-terminated)
+        data.append(Data(username.utf8))
+        data.append(0)
+
         // Client caps (4 bytes LE)
         var caps = clientCaps.littleEndian
         data.append(Data(bytes: &caps, count: 4))
@@ -391,10 +395,6 @@ public struct ClientAuthUser {
             var ver = clientVersion.littleEndian
             data.append(Data(bytes: &ver, count: 4))
         }
-
-        // Username (null-terminated)
-        data.append(Data(username.utf8))
-        data.append(0)
 
         return data
     }

@@ -1,132 +1,104 @@
-# jamauv3 - Project Context for Claude
+# jamauv3 - Critical Project Context
 
-## What This Project Is
+## What This Is
+**jamauv3** - AUv3 plugin for NINJAM (online collaborative music jamming). Targets iOS/iPadOS/macOS.
 
-**jamauv3** is a modern AUv3 (Audio Unit v3) reimplementation of JamTaba - a client for NINJAM online music jamming. Target platforms: iOS, iPadOS, macOS (and potentially tvOS later).
+**NINJAM** - Musicians jam with ~1 interval latency. Audio (OGG Vorbis) streamed to server, redistributed to all. You hear others' *previous* interval.
 
-### What is NINJAM?
-
-NINJAM (Novel Intervallic Jamming Architecture for Music) is a protocol for real-time collaborative music over the internet. Key concepts:
-- Musicians play together with ~1 measure latency
-- Audio is compressed (OGG Vorbis) and streamed to server
-- Server redistributes audio to all participants
-- Everyone hears what others played in the *previous* interval
-- This creates a unique "time-shifted" jamming experience
-
-### Why This Project?
-
-JamTaba is Qt-based and desktop-only. This project brings NINJAM to Apple mobile devices as a native AUv3 plugin that works in GarageBand, AUM, Cubasis, etc.
-
-## Reference Codebases
-
-### 1. JamTaba (Primary Reference)
-**Location:** `~/work/github/JamTaba`
-
-Modern Qt-based NINJAM client with GUI. Key source paths:
-- `src/Common/ninjam/` - NINJAM protocol implementation
-- `src/Common/audio/` - Audio processing
-- `src/Common/NinjamController.cpp` - Main jam session logic
-- `src/Plugins/` - VST/AU plugin implementations
-
-### 2. Official NINJAM (Protocol Reference)
-**Location:** `~/work/github/ninjam`
-
-Cockos' original NINJAM implementation. Key files:
-- `ninjam/njclient.cpp` / `njclient.h` - Core client (90KB+ of protocol logic)
-- `ninjam/netmsg.cpp` / `netmsg.h` - Network message definitions
-- `ninjam/mpb.cpp` / `mpb.h` - Message parsing/building
-- `ninjam/server/` - Server implementation
-- `WDL/` - Cockos utility library (strings, networking, etc.)
-
-### 3. Expert Sleepers Plugin (AU Reference)
-**Location:** `~/work/github/sleepers/ninjamplugin`
-
-Old Carbon-era AU plugin (2006). Useful for:
-- `njinterface.cpp` - How AU integrates with njclient
-- Shows audio buffer handling approach
-
-## Current Project Structure
-
+## Project Structure
 ```
 /Volumes/Data/work/jamauv3/
-├── jamauv3/                    # Host app (for testing AU)
-│   └── Common/Audio/           # Audio playback engine
+├── Shared/NINJAM/              # Protocol implementation
+│   ├── NINJAMClient.swift      # Main client (@MainActor, ObservableObject)
+│   └── NINJAMProtocol.swift    # All message types
 ├── jamauv3Extension/           # The AUv3 plugin
-│   ├── DSP/                    # C/C++ audio processing
-│   │   ├── jamauv3ExtensionDSPKernel.hpp
-│   │   ├── OggDecoder.c/h      # OGG Vorbis decoding (stb_vorbis)
-│   │   └── stb_vorbis.h        # stb_vorbis library
-│   ├── Common/
-│   │   ├── Audio Unit/         # AUAudioUnit Swift implementation
-│   │   ├── UI/                 # SwiftUI views, ConnectionManager
-│   │   └── Audio/              # OggVorbisDecoder.swift wrapper
-│   └── Parameters/             # AU parameter definitions
-├── jamauv3Tests/
-└── jamauv3UITests/
+│   ├── DSP/                    # Pure Swift audio processing
+│   ├── Common/UI/              # ConnectionSettings, AudioUnitViewController
+│   ├── Parameters/             # AU parameters
+│   └── UI/                     # Main SwiftUI view
+├── jamauv3Tests/               # Tests (NINJAMProtocolTests)
+└── jamauv3/                    # Host app for testing
 ```
 
-## What's Already Implemented
+## Current Status
 
-1. **Basic AUv3 scaffold** - Music Effect type AU with Swift UI
-2. **TCP networking** - ConnectionManager for persistent connections
-3. **OGG Vorbis decoding** - stb_vorbis integrated with Swift wrapper
-4. **MIDI 2.0 support** - Protocol handling in DSP kernel
+**Working:**
+- ✅ NINJAM client: connect, authenticate, keepalive, receive messages
+- ✅ Protocol: all message types (auth, config, user info, chat, audio download)
+- ✅ SwiftUI UI with connection settings
+- ✅ OGG Vorbis **decoding** (libvorbis via CVorbis module from swift-vorbis package)
+- ✅ Pure Swift DSP kernel
+- ✅ 29 passing tests (protocol parsing, E2E auth)
 
-## What Needs to Be Built
+## Next Steps (Priority Order)
 
-### Protocol Layer
-- [ ] NINJAM message parsing (see `ninjam/netmsg.cpp`, `mpb.cpp`)
-- [ ] Authentication handshake
-- [ ] BPM/BPI synchronization
-- [ ] User/channel management
+### 1. NINJAM Timing UI (High Priority - User Visibility)
+**File:** `jamauv3Extension/UI/jamauv3ExtensionMainView.swift`
 
-### Audio Layer
-- [ ] OGG Vorbis encoding (for sending audio)
-- [ ] Interval-based audio buffering
-- [ ] Mixing remote user streams
-- [ ] Metronome with configurable sounds
-
-### UI Layer
-- [ ] Server browser / connection UI
-- [ ] Mixer view for remote users
-- [ ] Chat interface
-- [ ] Settings (latency, audio quality)
-
-## Key Technical Notes
-
-### NINJAM Protocol Basics
-- Default port: 2049
-- Uses OGG Vorbis @ typically 64-96 kbps
-- Intervals measured in BPM/BPI (beats per interval)
-- Common: 120 BPM, 16 BPI = 8 second intervals
-
-### AUv3 Constraints
-- Must be sandbox-safe
-- Network access requires appropriate entitlements
-- Real-time audio thread - no blocking operations
-- Swift for UI, can use C/C++ for DSP via bridging header
-
-### File Locations Quick Reference
-```
-JamTaba NINJAM code:     ~/work/github/JamTaba/src/Common/ninjam/
-Original njclient:       ~/work/github/ninjam/ninjam/njclient.cpp
-Network messages:        ~/work/github/ninjam/ninjam/netmsg.cpp
-Server code:             ~/work/github/ninjam/ninjam/server/
-This project:            /Volumes/Data/work/jamauv3/
+Add to NINJAMClient.swift:
+```swift
+@Published var bpm: Int = 120
+@Published var bpi: Int = 16
+@Published var currentBeat: Int = 0
+@Published var intervalProgress: Double = 0.0  // 0.0 to 1.0
 ```
 
-## Building
+Display in UI (between connection settings and user gains):
+- Interval progress bar
+- "120 BPM, 16 BPI" display
+- Beat counter "9/16"
+- Time remaining in interval
 
-```bash
-# Build from command line
-xcodebuild -project jamauv3.xcodeproj -scheme jamauv3 -destination 'platform=macOS' build
+Start interval timer when receiving CONFIG_CHANGE_NOTIFY.
 
-# Or open in Xcode
-open jamauv3.xcodeproj
-```
+### 2. OGG Vorbis Encoding (High Priority - Core Functionality)
+**New file:** `jamauv3Extension/Common/Audio/OggVorbisEncoder.swift`
 
-## Git Remote
+Create Swift wrapper for libvorbis encoding (similar to existing OggVorbisDecoder.swift):
+- Use CVorbis module (already in project via swift-vorbis package)
+- Target quality: ~64-96 kbps for NINJAM
+- Input: Float samples from DSP
+- Output: Data (OGG stream)
 
+Write tests for encode/decode round-trip.
+
+### 3. Interval Buffer System (High Priority - Core Functionality)
+**New file:** `jamauv3Extension/DSP/IntervalBuffer.swift`
+
+Implement:
+- BPM/BPI-based interval timing
+- Capture audio from DSP kernel during interval
+- Encode to OGG when interval completes
+- Send via `ClientUploadIntervalBegin` + `ClientUploadIntervalWrite` messages
+
+### 4. Audio Mixing & Playback (Medium Priority)
+Implement:
+- Decode received OGG streams (already have decoder)
+- Mix multiple remote user streams
+- Sync playback with interval boundaries
+- Route to DSP output
+
+### 5. Integration (Medium Priority)
+- Connect NINJAMClient to DSP kernel (bidirectional audio flow)
+- Wire up per-user gain controls (already in UI)
+- Implement metronome
+
+### 6. Polish (Lower Priority)
+- Chat UI (protocol support exists)
+- Settings (audio quality, latency compensation)
+- Error handling improvements
+
+## Key Facts
+- **NINJAM port:** 2049
+- **Protocol:** OGG Vorbis @ 64-96 kbps, BPM/BPI-based intervals
+- **Common settings:** 120 BPM, 16 BPI = 8 second intervals
+- **NINJAMClient:** Use from UI via `@ObservedObject` - has `isConnected`, `connectionStatus`, `lastError`
+
+## Reference Codebases
+- **JamTaba:** `~/work/github/JamTaba/src/Common/ninjam/` - Modern Qt client
+- **Original NINJAM:** `~/work/github/ninjam/ninjam/njclient.cpp` - Cockos' implementation
+
+## Git
 ```
 origin: quiet:/storage/git/jamauv3.git
 ```

@@ -7,8 +7,17 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		1C7582982F1C36FE0008547A /* NINJAMClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7582942F1C36FE0008547A /* NINJAMClient.swift */; };
+		1C7582992F1C36FE0008547A /* NINJAMProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7582952F1C36FE0008547A /* NINJAMProtocol.swift */; };
+		1C75829A2F1C36FE0008547A /* NINJAMClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7582942F1C36FE0008547A /* NINJAMClient.swift */; };
+		1C75829B2F1C36FE0008547A /* NINJAMProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7582952F1C36FE0008547A /* NINJAMProtocol.swift */; };
+		1C75829C2F1C36FE0008547A /* NINJAMClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7582942F1C36FE0008547A /* NINJAMClient.swift */; };
+		1C75829D2F1C36FE0008547A /* NINJAMProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7582952F1C36FE0008547A /* NINJAMProtocol.swift */; };
+		1C75829E2F1C36FE0008547A /* NINJAMClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7582942F1C36FE0008547A /* NINJAMClient.swift */; };
+		1C75829F2F1C36FE0008547A /* NINJAMProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7582952F1C36FE0008547A /* NINJAMProtocol.swift */; };
 		1CDA07022F1AF65F00D4544F /* jamauv3Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 1CDA07012F1AF65F00D4544F /* jamauv3Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		1CDA07442F1AF65F00D4544F /* Vorbis in Frameworks */ = {isa = PBXBuildFile; productRef = 1CDA07432F1AF65F00D4544F /* Vorbis */; };
+		1CEC93F92F1C053600E4B31C /* Vorbis in Frameworks */ = {isa = PBXBuildFile; productRef = 1CDA07502F1AF66000D45450 /* Vorbis */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -33,6 +42,13 @@
 			remoteGlobalIDString = 1CDA07002F1AF65F00D4544F;
 			remoteInfo = jamauv3Extension;
 		};
+		1CEC945E2F1C053900E4B31C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1CDA06BB2F1AF65E00D4544F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1CDA07002F1AF65F00D4544F;
+			remoteInfo = jamauv3Extension;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -50,6 +66,8 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		1C7582942F1C36FE0008547A /* NINJAMClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NINJAMClient.swift; sourceTree = "<group>"; };
+		1C7582952F1C36FE0008547A /* NINJAMProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NINJAMProtocol.swift; sourceTree = "<group>"; };
 		1CDA06C32F1AF65E00D4544F /* jamauv3.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = jamauv3.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1CDA06EB2F1AF65F00D4544F /* jamauv3Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = jamauv3Tests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1CDA06F52F1AF65F00D4544F /* jamauv3UITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = jamauv3UITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -104,6 +122,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1CEC93F92F1C053600E4B31C /* Vorbis in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -125,9 +144,27 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		1C7582962F1C36FE0008547A /* NINJAM */ = {
+			isa = PBXGroup;
+			children = (
+				1C7582942F1C36FE0008547A /* NINJAMClient.swift */,
+				1C7582952F1C36FE0008547A /* NINJAMProtocol.swift */,
+			);
+			path = NINJAM;
+			sourceTree = "<group>";
+		};
+		1C7582972F1C36FE0008547A /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				1C7582962F1C36FE0008547A /* NINJAM */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
 		1CDA06BA2F1AF65E00D4544F = {
 			isa = PBXGroup;
 			children = (
+				1C7582972F1C36FE0008547A /* Shared */,
 				1CDA06C52F1AF65E00D4544F /* jamauv3 */,
 				1CDA06EE2F1AF65F00D4544F /* jamauv3Tests */,
 				1CDA06F82F1AF65F00D4544F /* jamauv3UITests */,
@@ -332,6 +369,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1C75829A2F1C36FE0008547A /* NINJAMClient.swift in Sources */,
+				1C75829B2F1C36FE0008547A /* NINJAMProtocol.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -339,6 +378,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1C75829C2F1C36FE0008547A /* NINJAMClient.swift in Sources */,
+				1C75829D2F1C36FE0008547A /* NINJAMProtocol.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -346,6 +387,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1C7582982F1C36FE0008547A /* NINJAMClient.swift in Sources */,
+				1C7582992F1C36FE0008547A /* NINJAMProtocol.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -353,6 +396,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1C75829E2F1C36FE0008547A /* NINJAMClient.swift in Sources */,
+				1C75829F2F1C36FE0008547A /* NINJAMProtocol.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -364,10 +409,6 @@
 			target = 1CDA06C22F1AF65E00D4544F /* jamauv3 */;
 			targetProxy = 1CDA06EC2F1AF65F00D4544F /* PBXContainerItemProxy */;
 		};
-		1CDA07512F1AF66100D45451 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 1CDA07002F1AF65F00D4544F /* jamauv3Extension */;
-		};
 		1CDA06F72F1AF65F00D4544F /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 1CDA06C22F1AF65E00D4544F /* jamauv3 */;
@@ -377,6 +418,11 @@
 			isa = PBXTargetDependency;
 			target = 1CDA07002F1AF65F00D4544F /* jamauv3Extension */;
 			targetProxy = 1CDA07032F1AF65F00D4544F /* PBXContainerItemProxy */;
+		};
+		1CDA07512F1AF66100D45451 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1CDA07002F1AF65F00D4544F /* jamauv3Extension */;
+			targetProxy = 1CEC945E2F1C053900E4B31C /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -811,30 +857,6 @@
 			};
 			name = Release;
 		};
-
-/* Begin XCRemoteSwiftPackageReference section */
-		1CDA07412F1AF65F00D4544F /* XCRemoteSwiftPackageReference "swift-vorbis" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/readdle/swift-vorbis.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.3.7;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		1CDA07432F1AF65F00D4544F /* Vorbis */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 1CDA07412F1AF65F00D4544F /* XCRemoteSwiftPackageReference "swift-vorbis" */;
-			productName = Vorbis;
-		};
-		1CDA07502F1AF66000D45450 /* Vorbis */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 1CDA07412F1AF65F00D4544F /* XCRemoteSwiftPackageReference "swift-vorbis" */;
-			productName = Vorbis;
-		};
-/* End XCSwiftPackageProductDependency section */
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -884,6 +906,30 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		1CDA07412F1AF65F00D4544F /* XCRemoteSwiftPackageReference "swift-vorbis" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/readdle/swift-vorbis.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.3.7;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		1CDA07432F1AF65F00D4544F /* Vorbis */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1CDA07412F1AF65F00D4544F /* XCRemoteSwiftPackageReference "swift-vorbis" */;
+			productName = Vorbis;
+		};
+		1CDA07502F1AF66000D45450 /* Vorbis */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1CDA07412F1AF65F00D4544F /* XCRemoteSwiftPackageReference "swift-vorbis" */;
+			productName = Vorbis;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 1CDA06BB2F1AF65E00D4544F /* Project object */;
 }

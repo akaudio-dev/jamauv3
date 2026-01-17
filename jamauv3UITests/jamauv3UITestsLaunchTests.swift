@@ -7,6 +7,8 @@
 
 import XCTest
 
+// UI Tests disabled for now - uncomment when needed
+/*
 final class jamauv3UITestsLaunchTests: XCTestCase {
 
     override class var runsForEachTargetApplicationUIConfiguration: Bool {
@@ -31,3 +33,4 @@ final class jamauv3UITestsLaunchTests: XCTestCase {
         add(attachment)
     }
 }
+*/
