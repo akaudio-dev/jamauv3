@@ -182,7 +182,7 @@ public:
     
     double mSampleRate = 44100.0;
     double mGain = 1.0;
-    double mNoteEnvelope = 0.0;
+    double mNoteEnvelope = 1.0;  // Initialize to 1.0 so audio passes through even without MIDI
     
     bool mBypassed = false;
     AUAudioFrameCount mMaxFramesToRender = 1024;

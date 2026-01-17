@@ -19,6 +19,9 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
     var hostingController: HostingController<jamauv3ExtensionMainView>?
     
     private var observation: NSKeyValueObservation?
+    
+    private let connectionSettings = ConnectionSettings()
+    private let connectionManager = ConnectionManager()
 
 	/* iOS View lifcycle
 	public override func viewWillAppear(_ animated: Bool) {
@@ -106,7 +109,11 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         guard let observableParameterTree = audioUnit.observableParameterTree else {
             return
         }
-        let content = jamauv3ExtensionMainView(parameterTree: observableParameterTree)
+        let content = jamauv3ExtensionMainView(
+            parameterTree: observableParameterTree,
+            connectionSettings: connectionSettings,
+            connectionManager: connectionManager
+        )
         let host = HostingController(rootView: content)
         self.addChild(host)
         host.view.frame = self.view.bounds

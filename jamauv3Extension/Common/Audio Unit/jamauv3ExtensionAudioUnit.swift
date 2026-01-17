@@ -28,7 +28,7 @@ public class jamauv3ExtensionAudioUnit: AUAudioUnit, @unchecked Sendable
         inputBus.initialize(format, 8);
 
         // Create the input and output bus arrays.
-        _inputBusses = AUAudioUnitBusArray(audioUnit: self, busType: AUAudioUnitBusType.output, busses: [inputBus.bus!])
+        _inputBusses = AUAudioUnitBusArray(audioUnit: self, busType: AUAudioUnitBusType.input, busses: [inputBus.bus!])
         
         // Create the input and output bus arrays.
         _outputBusses = AUAudioUnitBusArray(audioUnit: self, busType: AUAudioUnitBusType.output, busses: [outputBus!])
