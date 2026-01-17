@@ -7,3 +7,4 @@
 
 #import "jamauv3ExtensionParameterAddresses.h"
 #import "jamauv3ExtensionAUProcessHelper.hpp"
+#import "OggDecoder.h"
