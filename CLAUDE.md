@@ -12,15 +12,16 @@
 │   ├── NINJAM/                 # Protocol implementation
 │   │   ├── NINJAMClient.swift  # Main client (@MainActor, ObservableObject)
 │   │   └── NINJAMProtocol.swift # All message types + IntervalConfig
-│   └── Audio/                  # Shared audio codecs (added to host + extension targets)
+│   └── Audio/                  # Shared audio codecs + mixer (added to host + extension targets)
 │       ├── OggVorbisDecoder.swift
-│       └── OggVorbisEncoder.swift
+│       ├── OggVorbisEncoder.swift
+│       └── RemoteAudioMixer.swift  # Receives OGG from remote users, decodes, mixes into output
 ├── jamauv3Extension/           # The AUv3 plugin
 │   ├── DSP/                    # Pure Swift audio processing
-│   │   ├── DSPKernel.swift     # Render thread processing, captures input for IntervalBuffer
+│   │   ├── DSPKernel.swift     # Render thread processing, captures input + mixes remote output
 │   │   ├── CircularBuffer.swift # Lock-free SPSC buffer (Synchronization.Atomic)
 │   │   └── IntervalBuffer.swift # Interval capture → OGG encode → upload messages
-│   ├── Common/UI/              # ConnectionSettings, AudioUnitViewController (wires IntervalBuffer ↔ NINJAMClient)
+│   ├── Common/UI/              # ConnectionSettings, AudioUnitViewController (wires IntervalBuffer + RemoteAudioMixer ↔ NINJAMClient)
 │   ├── Parameters/             # AU parameters
 │   └── UI/                     # Main SwiftUI view
 ├── jamauv3Tests/               # Tests (protocol, E2E, encoding, memory)
@@ -36,10 +37,11 @@
 - ✅ OGG Vorbis **encoding** and **decoding** (libvorbis via CVorbis/COgg modules from swift-vorbis/swift-ogg packages)
 - ✅ Pure Swift DSP kernel + lock-free CircularBuffer (Synchronization.Atomic)
 - ✅ **Interval Buffer System**: sample-accurate capture, incremental OGG encoding, streaming upload
-- ✅ AudioUnitViewController wires IntervalBuffer ↔ NINJAMClient (auto start/stop/config update)
-- ✅ Tests: protocol parsing, E2E auth, OGG encode/decode, interval serialization, memory leak detection
+- ✅ **Remote Audio Mixer**: receives OGG from remote users, decodes to PCM, double-buffered playback with RT-safe mixing
+- ✅ AudioUnitViewController wires IntervalBuffer + RemoteAudioMixer ↔ NINJAMClient (auto start/stop/config update)
+- ✅ Tests: protocol parsing, E2E auth, OGG encode/decode, interval serialization, remote mixer, memory leak detection
 
-### Interval Buffer Architecture
+### Interval Buffer Architecture (Upload)
 ```
 Render thread              Encoding thread (background)        Main thread (@MainActor)
 DSPKernel.process()        encodingLoop() ~100Hz               NINJAMClient.send()
@@ -51,20 +53,27 @@ DSPKernel.process()        encodingLoop() ~100Hz               NINJAMClient.send
 [CircularBuffer] ──SPSC──> [encoder] ──Task @MainActor──> [upload messages]
 ```
 
+### Remote Audio Mixer Architecture (Download)
+```
+@MainActor                      Decode thread (background)        Render thread
+─────────────────────           ──────────────────────            ─────────────────
+NINJAMClient delegate           decodeLoop() ~100Hz              DSPKernel.process()
+  │                               │                                ▲
+  │ beginDownload()               │ OggVorbisDecoder.decode()      │
+  │ receiveData()                 │ resample if needed             │ read currentBuffer
+  │ accumulate OGG by GUID        │ write PCM to PlaybackBuffer    │ apply userGains
+  │ on isEnd → dispatch ──────>   │ set nextReady flag             │ additive mix
+  ▼                               ▼                                │ (mono → stereo)
+[DownloadState dict]           [PlaybackBuffer]                  [mixInto() output]
+```
+
 ## Next Steps (Priority Order)
 
-### 1. Audio Mixing & Playback (High Priority)
-Implement:
-- Decode received OGG streams (already have decoder)
-- Mix multiple remote user streams
-- Sync playback with interval boundaries
-- Route to DSP output
-
-### 2. Integration (Medium Priority)
-- Wire up per-user gain controls (already in UI)
+### 1. Integration (High Priority)
+- Wire up per-user gain controls (already in UI, RemoteAudioMixer maps users to gain slots 0-7)
 - Implement metronome
 
-### 3. Polish (Lower Priority)
+### 2. Polish (Medium Priority)
 - Chat UI (protocol support exists)
 - Settings (audio quality, latency compensation)
 - Error handling improvements
@@ -77,6 +86,8 @@ Implement:
 - **Upload messages:** `ClientUploadIntervalBegin` (0x83, fourCC=`0x7667674F` for OGG, 0 for silence) + `ClientUploadIntervalWrite` (0x84, flags bit 0 = end of interval)
 - **IntervalConfig:** `IntervalConfig(bpm:bpi:sampleRate:)` → `intervalLengthInSamples` (e.g. 120 BPM, 16 BPI, 44100 Hz = 352800 samples)
 - **IntervalBuffer:** 3-thread model (render → SPSC CircularBuffer → encoding thread → @MainActor callbacks). Start/stop managed by AudioUnitViewController via NINJAMClientDelegate
+- **RemoteAudioMixer:** 3-thread model (@MainActor accumulates OGG fragments → decode thread decodes to PCM → render thread mixes). Double-buffered: decode writes nextBuffer, render swaps at interval boundary. Uses PlaybackBuffer (flat linear buffer) not CircularBuffer. Lives in Shared/Audio/ (compiled into both host + extension)
+- **Download messages:** `ServerDownloadIntervalBegin` (0x04, GUID, username, channelIndex, fourCC) + `ServerDownloadIntervalWrite` (0x05, GUID, flags, audioData). Delegate passes fourCC so mixer can skip silence intervals
 
 ## Testing
 

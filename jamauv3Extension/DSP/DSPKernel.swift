@@ -23,6 +23,9 @@ final class DSPKernel: @unchecked Sendable {
 
     /// Interval buffer for capturing local audio and encoding to OGG for NINJAM upload
     var intervalBuffer: IntervalBuffer?
+
+    /// Remote audio mixer for decoding and playing back other users' audio
+    var remoteAudioMixer: RemoteAudioMixer?
     
     var musicalContextBlock: AUHostMusicalContextBlock?
     var midiOutputEventBlock: AUMIDIEventListBlock?
@@ -127,6 +130,15 @@ final class DSPKernel: @unchecked Sendable {
             for frameIndex in 0..<Int(frameCount) {
                 outputFloats[frameIndex] = inputFloats[frameIndex] * noteEnvelope
             }
+        }
+
+        // Mix remote users' audio into the output
+        userGains.withUnsafeBufferPointer { gainsPtr in
+            remoteAudioMixer?.mixInto(
+                outputBufferList: outputBufferList,
+                frameCount: Int(frameCount),
+                userGains: gainsPtr
+            )
         }
     }
     

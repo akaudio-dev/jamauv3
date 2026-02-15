@@ -214,47 +214,6 @@ struct IntervalEncodingTests {
 
 // MARK: - Memory Tests
 
-/// Helper to measure resident memory of the current process.
-private func residentMemoryBytes() -> Int {
-    var info = mach_task_basic_info()
-    var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
-    let result = withUnsafeMutablePointer(to: &info) { infoPtr in
-        infoPtr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rawPtr in
-            task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), rawPtr, &count)
-        }
-    }
-    return result == KERN_SUCCESS ? Int(info.resident_size) : 0
-}
-
-/// Run a closure `count` times inside autoreleasepool, return total resident memory growth.
-private func measureMemoryGrowth(warmup: Int, iterations: Int, body: () throws -> Void) rethrows -> (warmupToMid: Int, midToEnd: Int) {
-    // Warmup phase — gets allocator caches and code paths hot
-    for _ in 0..<warmup {
-        try autoreleasepool { try body() }
-    }
-
-    let after_warmup = residentMemoryBytes()
-
-    // Phase 1
-    for _ in 0..<iterations {
-        try autoreleasepool { try body() }
-    }
-
-    let after_phase1 = residentMemoryBytes()
-
-    // Phase 2 — same number of iterations
-    for _ in 0..<iterations {
-        try autoreleasepool { try body() }
-    }
-
-    let after_phase2 = residentMemoryBytes()
-
-    return (
-        warmupToMid: after_phase1 - after_warmup,
-        midToEnd: after_phase2 - after_phase1
-    )
-}
-
 @Suite("Memory")
 struct MemoryTests {
 

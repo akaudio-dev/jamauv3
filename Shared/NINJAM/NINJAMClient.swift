@@ -31,7 +31,7 @@ protocol NINJAMClientDelegate: AnyObject {
     func client(_ client: NINJAMClient, didReceiveConfig bpm: Int, bpi: Int)
     func client(_ client: NINJAMClient, didReceiveUserInfo channels: [RemoteChannelInfo])
     func client(_ client: NINJAMClient, didReceiveChatMessage message: ServerChatMessage)
-    func client(_ client: NINJAMClient, didReceiveAudioBegin guid: Data, username: String, channelIndex: Int)
+    func client(_ client: NINJAMClient, didReceiveAudioBegin guid: Data, username: String, channelIndex: Int, fourCC: UInt32)
     func client(_ client: NINJAMClient, didReceiveAudioData guid: Data, data: Data, isEnd: Bool)
     func client(_ client: NINJAMClient, didReceiveLicenseAgreement license: String) -> Bool
 }
@@ -39,7 +39,7 @@ protocol NINJAMClientDelegate: AnyObject {
 // Default implementations for optional delegate methods
 extension NINJAMClientDelegate {
     func client(_ client: NINJAMClient, didReceiveLicenseAgreement license: String) -> Bool { true }
-    func client(_ client: NINJAMClient, didReceiveAudioBegin guid: Data, username: String, channelIndex: Int) {}
+    func client(_ client: NINJAMClient, didReceiveAudioBegin guid: Data, username: String, channelIndex: Int, fourCC: UInt32) {}
     func client(_ client: NINJAMClient, didReceiveAudioData guid: Data, data: Data, isEnd: Bool) {}
 }
 
@@ -432,7 +432,7 @@ final class NINJAMClient: ObservableObject {
 
         logger.debug("Audio begin: \(begin.username) ch\(begin.channelIndex) size=\(begin.estimatedSize)")
 
-        delegate?.client(self, didReceiveAudioBegin: begin.guid, username: begin.username, channelIndex: Int(begin.channelIndex))
+        delegate?.client(self, didReceiveAudioBegin: begin.guid, username: begin.username, channelIndex: Int(begin.channelIndex), fourCC: begin.fourCC)
     }
 
     private func handleDownloadIntervalWrite(_ payload: Data) {

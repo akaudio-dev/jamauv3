@@ -19,6 +19,8 @@
 		AA00000200000000000E0001 /* OggVorbisDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000E0001 /* OggVorbisDecoder.swift */; };
 		AA00000300000000000E0001 /* OggVorbisEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000A00000000000E0001 /* OggVorbisEncoder.swift */; };
 		AA00000400000000000E0001 /* OggVorbisEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000A00000000000E0001 /* OggVorbisEncoder.swift */; };
+		BB00000100000000000F0001 /* RemoteAudioMixer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000000000000000F0001 /* RemoteAudioMixer.swift */; };
+		BB00000200000000000F0001 /* RemoteAudioMixer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000000000000000F0001 /* RemoteAudioMixer.swift */; };
 		AA00000500000000000E0001 /* Vorbis in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000600000000000E0001 /* Vorbis */; };
 		AA00001400000000000E0001 /* Ogg in Frameworks */ = {isa = PBXBuildFile; productRef = AA00001100000000000E0001 /* Ogg */; };
 		AA00001500000000000E0001 /* Ogg in Frameworks */ = {isa = PBXBuildFile; productRef = AA00001200000000000E0001 /* Ogg */; };
@@ -77,6 +79,7 @@
 		1C7582952F1C36FE0008547A /* NINJAMProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NINJAMProtocol.swift; sourceTree = "<group>"; };
 		AA00000000000000000E0001 /* OggVorbisDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OggVorbisDecoder.swift; sourceTree = "<group>"; };
 		AA00000A00000000000E0001 /* OggVorbisEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OggVorbisEncoder.swift; sourceTree = "<group>"; };
+		BB00000000000000000F0001 /* RemoteAudioMixer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAudioMixer.swift; sourceTree = "<group>"; };
 		1CDA06C32F1AF65E00D4544F /* jamauv3.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = jamauv3.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1CDA06EB2F1AF65F00D4544F /* jamauv3Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = jamauv3Tests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1CDA06F52F1AF65F00D4544F /* jamauv3UITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = jamauv3UITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -170,6 +173,7 @@
 			children = (
 				AA00000000000000000E0001 /* OggVorbisDecoder.swift */,
 				AA00000A00000000000E0001 /* OggVorbisEncoder.swift */,
+				BB00000000000000000F0001 /* RemoteAudioMixer.swift */,
 			);
 			path = Audio;
 			sourceTree = "<group>";
@@ -399,6 +403,7 @@
 				1C75829B2F1C36FE0008547A /* NINJAMProtocol.swift in Sources */,
 				AA00000100000000000E0001 /* OggVorbisDecoder.swift in Sources */,
 				AA00000300000000000E0001 /* OggVorbisEncoder.swift in Sources */,
+				BB00000100000000000F0001 /* RemoteAudioMixer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -406,8 +411,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				1C75829C2F1C36FE0008547A /* NINJAMClient.swift in Sources */,
-				1C75829D2F1C36FE0008547A /* NINJAMProtocol.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -428,6 +431,7 @@
 				1C75829F2F1C36FE0008547A /* NINJAMProtocol.swift in Sources */,
 				AA00000200000000000E0001 /* OggVorbisDecoder.swift in Sources */,
 				AA00000400000000000E0001 /* OggVorbisEncoder.swift in Sources */,
+				BB00000200000000000F0001 /* RemoteAudioMixer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

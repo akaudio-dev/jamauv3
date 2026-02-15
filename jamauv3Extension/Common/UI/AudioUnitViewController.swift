@@ -23,6 +23,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
     private let connectionSettings = ConnectionSettings()
     private let ninjamClient = NINJAMClient()
     private var intervalBuffer: IntervalBuffer?
+    private var remoteAudioMixer: RemoteAudioMixer?
 
 	/* iOS View lifcycle
 	public override func viewWillAppear(_ animated: Bool) {
@@ -130,6 +131,8 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         auUnit.kernel.intervalBuffer = buffer
         self.intervalBuffer = buffer
         buffer.start()
+
+        startRemoteAudioMixer(config: config, kernel: auUnit.kernel)
     }
 
     /// Stop interval capture on disconnect
@@ -139,6 +142,8 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
             auUnit.kernel.intervalBuffer = nil
         }
         intervalBuffer = nil
+
+        stopRemoteAudioMixer()
     }
 
     /// Update interval buffer config on BPM/BPI change
@@ -147,6 +152,24 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         let sampleRate = auUnit.kernel.sampleRate
         let config = IntervalConfig(bpm: ninjamClient.bpm, bpi: ninjamClient.bpi, sampleRate: sampleRate)
         intervalBuffer?.updateConfig(config)
+        remoteAudioMixer?.updateConfig(config)
+    }
+
+    // MARK: - Remote Audio Mixer Wiring
+
+    private func startRemoteAudioMixer(config: IntervalConfig, kernel: DSPKernel) {
+        let mixer = RemoteAudioMixer()
+        kernel.remoteAudioMixer = mixer
+        self.remoteAudioMixer = mixer
+        mixer.start(config: config)
+    }
+
+    private func stopRemoteAudioMixer() {
+        remoteAudioMixer?.stop()
+        if let auUnit = audioUnit as? jamauv3ExtensionAudioUnit {
+            auUnit.kernel.remoteAudioMixer = nil
+        }
+        remoteAudioMixer = nil
     }
 
     // MARK: - SwiftUI Configuration
@@ -208,7 +231,15 @@ extension AudioUnitViewController: NINJAMClientDelegate {
     }
 
     func client(_ client: NINJAMClient, didReceiveUserInfo channels: [RemoteChannelInfo]) {
-        // Will be used for audio mixing in a future step
+        remoteAudioMixer?.updateUserInfo(channels: channels)
+    }
+
+    func client(_ client: NINJAMClient, didReceiveAudioBegin guid: Data, username: String, channelIndex: Int, fourCC: UInt32) {
+        remoteAudioMixer?.beginDownload(guid: guid, username: username, channelIndex: channelIndex, fourCC: fourCC)
+    }
+
+    func client(_ client: NINJAMClient, didReceiveAudioData guid: Data, data: Data, isEnd: Bool) {
+        remoteAudioMixer?.receiveData(guid: guid, data: data, isEnd: isEnd)
     }
 
     func client(_ client: NINJAMClient, didReceiveChatMessage message: ServerChatMessage) {
