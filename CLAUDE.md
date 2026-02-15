@@ -8,9 +8,13 @@
 ## Project Structure
 ```
 /Volumes/Data/work/jamauv3/
-├── Shared/NINJAM/              # Protocol implementation
-│   ├── NINJAMClient.swift      # Main client (@MainActor, ObservableObject)
-│   └── NINJAMProtocol.swift    # All message types
+├── Shared/
+│   ├── NINJAM/                 # Protocol implementation
+│   │   ├── NINJAMClient.swift  # Main client (@MainActor, ObservableObject)
+│   │   └── NINJAMProtocol.swift # All message types
+│   └── Audio/                  # Shared audio codecs (added to host + extension targets)
+│       ├── OggVorbisDecoder.swift
+│       └── OggVorbisEncoder.swift
 ├── jamauv3Extension/           # The AUv3 plugin
 │   ├── DSP/                    # Pure Swift audio processing (incl. CircularBuffer)
 │   ├── Common/UI/              # ConnectionSettings, AudioUnitViewController
@@ -26,24 +30,13 @@
 - ✅ NINJAM client: connect, authenticate, keepalive, receive messages
 - ✅ Protocol: all message types (auth, config, user info, chat, audio download)
 - ✅ SwiftUI UI with connection settings + interval timing (BPM/BPI, beat counter, progress bar)
-- ✅ OGG Vorbis **decoding** (libvorbis via CVorbis module from swift-vorbis package)
+- ✅ OGG Vorbis **encoding** and **decoding** (libvorbis via CVorbis/COgg modules from swift-vorbis/swift-ogg packages)
 - ✅ Pure Swift DSP kernel + lock-free CircularBuffer (Synchronization.Atomic)
-- ✅ 32 passing tests (protocol parsing, E2E auth, OGG fragment reception)
+- ✅ Tests: protocol parsing, E2E auth, OGG encode/decode round-trip, OGG fragment reception
 
 ## Next Steps (Priority Order)
 
-### 1. OGG Vorbis Encoding (High Priority - Core Functionality)
-**New file:** `jamauv3Extension/Common/Audio/OggVorbisEncoder.swift`
-
-Create Swift wrapper for libvorbis encoding (similar to existing OggVorbisDecoder.swift):
-- Use CVorbis module (already in project via swift-vorbis package)
-- Target quality: ~64-96 kbps for NINJAM
-- Input: Float samples from DSP
-- Output: Data (OGG stream)
-
-Write tests for encode/decode round-trip.
-
-### 2. Interval Buffer System (High Priority - Core Functionality)
+### 1. Interval Buffer System (High Priority - Core Functionality)
 **New file:** `jamauv3Extension/DSP/IntervalBuffer.swift`
 
 Implement:
@@ -74,6 +67,15 @@ Implement:
 - **Protocol:** OGG Vorbis @ 64-96 kbps, BPM/BPI-based intervals
 - **Common settings:** 120 BPM, 16 BPI = 8 second intervals
 - **NINJAMClient:** Use from UI via `@ObservedObject` - has `isConnected`, `connectionStatus`, `lastError`, `bpm`, `bpi`, `currentBeat`, `intervalProgress`
+
+## Testing
+
+**Test server credentials** are stored in `.claude/settings.local.json` as environment variables (`NINJAM_TEST_HOST`, `NINJAM_TEST_PORT`, `NINJAM_TEST_USER`, `NINJAM_TEST_PASS`). E2E tests use these to connect to a real NINJAM server. Pass them when running tests:
+```bash
+NINJAM_TEST_HOST="..." NINJAM_TEST_PORT="..." NINJAM_TEST_USER="..." NINJAM_TEST_PASS='...' xcodebuild test -scheme jamauv3 -destination 'platform=macOS' -enableCodeCoverage NO
+```
+
+**Note:** Use `-enableCodeCoverage NO` to avoid `___llvm_profile_runtime` linker errors with C package targets (swift-ogg).
 
 ## Reference Codebases
 - **JamTaba:** `~/work/github/JamTaba/src/Common/ninjam/` - Modern Qt client
