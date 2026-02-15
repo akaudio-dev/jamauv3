@@ -22,6 +22,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
     
     private let connectionSettings = ConnectionSettings()
     private let ninjamClient = NINJAMClient()
+    private var intervalBuffer: IntervalBuffer?
 
 	/* iOS View lifcycle
 	public override func viewWillAppear(_ animated: Bool) {
@@ -56,7 +57,9 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
 
     public override func viewDidLoad() {
         super.viewDidLoad()
-        
+
+        ninjamClient.delegate = self
+
         // Accessing the `audioUnit` parameter prompts the AU to be created via createAudioUnit(with:)
         guard let audioUnit = self.audioUnit else {
             return
@@ -100,6 +103,54 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
 		}
 	}
     
+    // MARK: - Interval Buffer Wiring
+
+    /// Start interval capture when connected with valid config
+    private func startIntervalCapture() {
+        guard let auUnit = audioUnit as? jamauv3ExtensionAudioUnit else { return }
+        let sampleRate = auUnit.kernel.sampleRate
+        let bpm = ninjamClient.bpm
+        let bpi = ninjamClient.bpi
+        guard bpm > 0, bpi > 0 else { return }
+
+        let config = IntervalConfig(bpm: bpm, bpi: bpi, sampleRate: sampleRate)
+        let buffer = IntervalBuffer(config: config)
+
+        buffer.onUploadBegin = { [weak self] msg in
+            self?.ninjamClient.sendUploadBegin(msg)
+        }
+        buffer.onUploadWrite = { [weak self] msg in
+            self?.ninjamClient.sendUploadWrite(msg)
+        }
+        buffer.onIntervalBoundary = { [weak self] in
+            // Reset the wall-clock interval timer for sample-accurate UI sync
+            self?.ninjamClient.resetIntervalTimer()
+        }
+
+        auUnit.kernel.intervalBuffer = buffer
+        self.intervalBuffer = buffer
+        buffer.start()
+    }
+
+    /// Stop interval capture on disconnect
+    private func stopIntervalCapture() {
+        intervalBuffer?.stop()
+        if let auUnit = audioUnit as? jamauv3ExtensionAudioUnit {
+            auUnit.kernel.intervalBuffer = nil
+        }
+        intervalBuffer = nil
+    }
+
+    /// Update interval buffer config on BPM/BPI change
+    private func updateIntervalConfig() {
+        guard let auUnit = audioUnit as? jamauv3ExtensionAudioUnit else { return }
+        let sampleRate = auUnit.kernel.sampleRate
+        let config = IntervalConfig(bpm: ninjamClient.bpm, bpi: ninjamClient.bpi, sampleRate: sampleRate)
+        intervalBuffer?.updateConfig(config)
+    }
+
+    // MARK: - SwiftUI Configuration
+
     private func configureSwiftUIView(audioUnit: AUAudioUnit) {
         if let host = hostingController {
             host.removeFromParent()
@@ -128,5 +179,39 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         host.view.bottomAnchor.constraint(equalTo: self.view.bottomAnchor).isActive = true
         self.view.bringSubviewToFront(host.view)
     }
-    
+
+}
+
+// MARK: - NINJAMClientDelegate
+
+extension AudioUnitViewController: NINJAMClientDelegate {
+    func client(_ client: NINJAMClient, didChangeState state: NINJAMConnectionState) {
+        switch state {
+        case .connected:
+            // Start interval capture once we have config (triggered by didReceiveConfig)
+            break
+        case .disconnected, .error:
+            stopIntervalCapture()
+        default:
+            break
+        }
+    }
+
+    func client(_ client: NINJAMClient, didReceiveConfig bpm: Int, bpi: Int) {
+        if intervalBuffer != nil {
+            // Already capturing — update config
+            updateIntervalConfig()
+        } else if client.isConnected {
+            // First config after connect — start capturing
+            startIntervalCapture()
+        }
+    }
+
+    func client(_ client: NINJAMClient, didReceiveUserInfo channels: [RemoteChannelInfo]) {
+        // Will be used for audio mixing in a future step
+    }
+
+    func client(_ client: NINJAMClient, didReceiveChatMessage message: ServerChatMessage) {
+        // Will be used for chat UI in a future step
+    }
 }

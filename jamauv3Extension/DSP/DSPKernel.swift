@@ -20,6 +20,9 @@ final class DSPKernel: @unchecked Sendable {
     private var noteEnvelope: Float = 1.0  // Initialize to 1.0 so audio passes through even without MIDI
     private var bypassed: Bool = false
     private var maxFramesToRender: AUAudioFrameCount = 1024
+
+    /// Interval buffer for capturing local audio and encoding to OGG for NINJAM upload
+    var intervalBuffer: IntervalBuffer?
     
     var musicalContextBlock: AUHostMusicalContextBlock?
     var midiOutputEventBlock: AUMIDIEventListBlock?
@@ -97,7 +100,19 @@ final class DSPKernel: @unchecked Sendable {
         
         let inputBuffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputBufferList))
         let outputBuffers = UnsafeMutableAudioBufferListPointer(outputBufferList)
-        
+
+        // Capture raw input for NINJAM upload (before envelope processing)
+        if let intervalBuffer = intervalBuffer,
+           inputBuffers.count >= 1,
+           let inputDataL = inputBuffers[0].mData {
+            let inputL = inputDataL.assumingMemoryBound(to: Float.self)
+            var inputR: UnsafePointer<Float>?
+            if inputBuffers.count >= 2, let inputDataR = inputBuffers[1].mData {
+                inputR = UnsafePointer(inputDataR.assumingMemoryBound(to: Float.self))
+            }
+            intervalBuffer.captureAudio(inputL: inputL, inputR: inputR, frameCount: Int(frameCount))
+        }
+
         // Process each channel
         for channelIndex in 0..<min(inputBuffers.count, outputBuffers.count) {
             guard let inputData = inputBuffers[channelIndex].mData,

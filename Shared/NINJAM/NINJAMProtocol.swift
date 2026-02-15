@@ -522,6 +522,109 @@ public struct ClientChatMessage {
     }
 }
 
+/// Client Upload Interval Begin (0x83)
+/// Announces start of audio upload for a local channel
+public struct ClientUploadIntervalBegin {
+    public let guid: Data        // 16 bytes - transfer identifier
+    public let estimatedSize: UInt32
+    public let fourCC: UInt32    // 'OGGv' (0x7667674F) for Vorbis, 0 for silence
+    public let channelIndex: UInt8
+
+    /// OGG Vorbis fourCC value ('OGGv' little-endian)
+    public static let oggVorbisFourCC: UInt32 = 0x7667674F
+
+    /// Create an audio upload begin message with a random GUID
+    public static func audio(channelIndex: UInt8, estimatedSize: UInt32 = 0) -> ClientUploadIntervalBegin {
+        var guidBytes = [UInt8](repeating: 0, count: 16)
+        for i in 0..<16 { guidBytes[i] = UInt8.random(in: 0...255) }
+        return ClientUploadIntervalBegin(
+            guid: Data(guidBytes),
+            estimatedSize: estimatedSize,
+            fourCC: oggVorbisFourCC,
+            channelIndex: channelIndex
+        )
+    }
+
+    /// Create a silence upload begin message (all-zero GUID, fourCC=0)
+    public static func silence(channelIndex: UInt8) -> ClientUploadIntervalBegin {
+        return ClientUploadIntervalBegin(
+            guid: Data(count: 16),
+            estimatedSize: 0,
+            fourCC: 0,
+            channelIndex: channelIndex
+        )
+    }
+
+    public init(guid: Data, estimatedSize: UInt32, fourCC: UInt32, channelIndex: UInt8) {
+        self.guid = guid
+        self.estimatedSize = estimatedSize
+        self.fourCC = fourCC
+        self.channelIndex = channelIndex
+    }
+
+    public func serialize() -> Data {
+        var data = Data(capacity: 25)
+        data.append(guid.prefix(16))
+        if guid.count < 16 { data.append(Data(count: 16 - guid.count)) }
+        var size = estimatedSize.littleEndian
+        data.append(Data(bytes: &size, count: 4))
+        var fcc = fourCC.littleEndian
+        data.append(Data(bytes: &fcc, count: 4))
+        data.append(channelIndex)
+        return data
+    }
+
+    public func buildMessage() -> Data {
+        let payload = serialize()
+        let header = NINJAMMessageHeader(
+            type: NINJAMClientMessageType.uploadIntervalBegin.rawValue,
+            payloadLength: UInt32(payload.count)
+        )
+        return header.serialize() + payload
+    }
+}
+
+/// Client Upload Interval Write (0x84)
+/// Audio data chunk for an upload interval
+public struct ClientUploadIntervalWrite {
+    public let guid: Data    // 16 bytes - matches the Begin message
+    public let flags: UInt8  // bit 0: end of interval
+    public let audioData: Data
+
+    public var isEndOfInterval: Bool {
+        (flags & 1) != 0
+    }
+
+    public init(guid: Data, flags: UInt8, audioData: Data) {
+        self.guid = guid
+        self.flags = flags
+        self.audioData = audioData
+    }
+
+    /// Create a write message with audio data
+    public static func data(guid: Data, audioData: Data, isEnd: Bool) -> ClientUploadIntervalWrite {
+        return ClientUploadIntervalWrite(guid: guid, flags: isEnd ? 1 : 0, audioData: audioData)
+    }
+
+    public func serialize() -> Data {
+        var data = Data(capacity: 17 + audioData.count)
+        data.append(guid.prefix(16))
+        if guid.count < 16 { data.append(Data(count: 16 - guid.count)) }
+        data.append(flags)
+        data.append(audioData)
+        return data
+    }
+
+    public func buildMessage() -> Data {
+        let payload = serialize()
+        let header = NINJAMMessageHeader(
+            type: NINJAMClientMessageType.uploadIntervalWrite.rawValue,
+            payloadLength: UInt32(payload.count)
+        )
+        return header.serialize() + payload
+    }
+}
+
 /// Server Chat Message (parsed from 0xC0)
 public struct ServerChatMessage {
     public enum MessageType {
@@ -566,6 +669,28 @@ public struct ServerChatMessage {
         default:
             self.messageType = .unknown(params: params)
         }
+    }
+}
+
+// MARK: - Interval Config
+
+/// Configuration derived from NINJAM server BPM/BPI settings
+public struct IntervalConfig: Sendable {
+    public let bpm: Int
+    public let bpi: Int
+    public let sampleRate: Double
+
+    public init(bpm: Int, bpi: Int, sampleRate: Double) {
+        self.bpm = bpm
+        self.bpi = bpi
+        self.sampleRate = sampleRate
+    }
+
+    /// Number of samples in one interval: (BPI / (BPM / 60)) * sampleRate
+    public var intervalLengthInSamples: Int {
+        guard bpm > 0 else { return 0 }
+        let intervalSeconds = Double(bpi) * 60.0 / Double(bpm)
+        return Int(intervalSeconds * sampleRate)
     }
 }
 

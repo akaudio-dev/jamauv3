@@ -506,6 +506,16 @@ final class NINJAMClient: ObservableObject {
         send(data: chat.buildMessage())
     }
 
+    /// Send an upload interval begin message
+    func sendUploadBegin(_ message: ClientUploadIntervalBegin) {
+        send(data: message.buildMessage())
+    }
+
+    /// Send an upload interval write message
+    func sendUploadWrite(_ message: ClientUploadIntervalWrite) {
+        send(data: message.buildMessage())
+    }
+
     // MARK: - Keepalive
 
     private func startKeepaliveTimer() {
@@ -533,6 +543,14 @@ final class NINJAMClient: ObservableObject {
     }
 
     // MARK: - Interval Timing
+
+    /// Reset interval timer to sync with sample-accurate interval boundary
+    func resetIntervalTimer() {
+        guard bpm > 0, bpi > 0 else { return }
+        intervalStartTime = Date()
+        currentBeat = 0
+        intervalProgress = 0.0
+    }
 
     private func startIntervalTimer() {
         intervalTimer?.invalidate()

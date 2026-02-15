@@ -10,7 +10,7 @@ import AVFoundation
 public class jamauv3ExtensionAudioUnit: AUAudioUnit, @unchecked Sendable
 {
     // Swift DSP Objects (no C++ needed)
-    private let kernel = DSPKernel()
+    let kernel = DSPKernel()
     private var renderProcessor: RenderProcessor?
     private let inputBus = BufferedInputBus()
 
