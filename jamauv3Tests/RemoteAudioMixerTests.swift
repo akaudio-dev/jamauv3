@@ -8,6 +8,7 @@
 import Testing
 import Foundation
 import AudioToolbox
+import Synchronization
 @testable import jamauv3
 
 // MARK: - Helper: Generate OGG data from a sine wave
@@ -325,6 +326,70 @@ struct ResamplingTests {
 
         let hasAudio = outputL.contains(where: { abs($0) > 0.001 })
         #expect(hasAudio, "Expected non-zero samples after resampling 48kHz → 44.1kHz")
+    }
+}
+
+// MARK: - Concurrent Access Tests
+
+@Suite("RemoteAudioMixer - Concurrency")
+struct ConcurrencyTests {
+
+    @Test("Concurrent mixInto + beginDownload/receiveData does not crash")
+    func concurrentMixAndDownload() throws {
+        let mixer = RemoteAudioMixer()
+        let config = IntervalConfig(bpm: 120, bpi: 16, sampleRate: 44100)
+        mixer.start(config: config)
+        defer { mixer.stop() }
+
+        let oggData = try generateOGGData(duration: 0.5)
+        let iterations = 200
+        let stopped = Atomic<Bool>(false)
+
+        // Render thread: call mixInto continuously
+        let renderThread = Thread {
+            let frameCount = 512
+            var outputL = [Float](repeating: 0, count: frameCount)
+            var outputR = [Float](repeating: 0, count: frameCount)
+            let gains: [Float] = Array(repeating: 1.0, count: 8)
+
+            while !stopped.load(ordering: .acquiring) {
+                outputL.withUnsafeMutableBufferPointer { lBuf in
+                    outputR.withUnsafeMutableBufferPointer { rBuf in
+                        withUnsafeMutableAudioBufferList(lBuf: lBuf, rBuf: rBuf) { abl in
+                            gains.withUnsafeBufferPointer { gainsPtr in
+                                mixer.mixInto(outputBufferList: abl, frameCount: frameCount, userGains: gainsPtr)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        renderThread.name = "test.renderThread"
+        renderThread.start()
+
+        // Main thread: repeatedly add/remove users and send audio
+        for i in 0..<iterations {
+            let username = "user\(i % 4)"
+            let guid = makeGUID(UInt8(i % 250))
+
+            // Update user info (adds/removes users)
+            let channels: [RemoteChannelInfo] = (0..<(i % 4 + 1)).map { j in
+                makeChannelInfo(username: "user\(j)")
+            }
+            mixer.updateUserInfo(channels: channels)
+
+            // Begin + receive audio
+            mixer.beginDownload(guid: guid, username: username, channelIndex: 0,
+                               fourCC: ClientUploadIntervalBegin.oggVorbisFourCC)
+            mixer.receiveData(guid: guid, data: oggData, isEnd: true)
+        }
+
+        // Let decode thread catch up
+        Thread.sleep(forTimeInterval: 0.5)
+
+        stopped.store(true, ordering: .releasing)
+        // Wait for render thread
+        Thread.sleep(forTimeInterval: 0.1)
     }
 }
 

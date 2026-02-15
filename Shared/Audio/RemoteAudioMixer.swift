@@ -31,9 +31,11 @@ struct DownloadState {
 }
 
 /// A decode job dispatched from main thread to decode thread.
+/// Includes the playbackState reference so the decode thread never accesses channelStates.
 private struct DecodeJob {
     let channelKey: ChannelKey
     let oggData: Data
+    let playbackState: ChannelPlaybackState
 }
 
 /// Simple linear playback buffer. Written once (all decoded samples upfront), read sequentially.
@@ -80,8 +82,9 @@ final class ChannelPlaybackState: @unchecked Sendable {
     var nextBuffer: PlaybackBuffer?
     /// Decode thread sets true; render thread exchanges to false at interval boundary
     let nextReady = Atomic<Bool>(false)
-    /// Index into DSPKernel.userGains[] (-1 = not assigned)
-    var gainSlot: Int = -1
+    /// Index into DSPKernel.userGains[] (-1 = not assigned).
+    /// Atomic: written by main thread (updateUserInfo), read by render thread (mixInto).
+    let gainSlot = Atomic<Int>(-1)
 
     init(channelKey: ChannelKey) {
         self.channelKey = channelKey
@@ -102,8 +105,8 @@ final class RemoteAudioMixer: @unchecked Sendable {
     /// Active downloads keyed by GUID. Only accessed on @MainActor.
     private var activeDownloads: [Data: DownloadState] = [:]
 
-    /// Playback states keyed by ChannelKey. Structural changes only on main thread.
-    /// Render thread reads the snapshot via renderChannels.
+    /// Playback states keyed by ChannelKey. Only accessed on main thread.
+    /// Render thread receives snapshots via staged handoff (stagedRenderChannels).
     private var channelStates: [ChannelKey: ChannelPlaybackState] = [:]
 
     /// Username → gain slot mapping. Only on @MainActor.
@@ -131,8 +134,10 @@ final class RemoteAudioMixer: @unchecked Sendable {
         arr.reserveCapacity(16)
         return arr
     }()
-    /// Render thread flag: has the render channel list been populated?
-    private let renderChannelsNeedUpdate = Atomic<Bool>(true)
+    /// Staged channel snapshot: written by main thread, picked up by render thread.
+    /// Protocol: flag=false → main thread owns staging area. flag=true → render thread may read.
+    private var stagedRenderChannels: [ChannelPlaybackState] = []
+    private let stagedRenderChannelsReady = Atomic<Bool>(false)
 
     /// Pre-allocated temp buffer for reading from PlaybackBuffer in mix loop
     private var tempBuffer: UnsafeMutablePointer<Float>?
@@ -147,7 +152,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
         _intervalLength.store(config.intervalLengthInSamples, ordering: .releasing)
         _sampleRate.store(Int(config.sampleRate), ordering: .releasing)
         samplePosition.store(0, ordering: .releasing)
-        renderChannelsNeedUpdate.store(true, ordering: .releasing)
+        stagedRenderChannelsReady.store(false, ordering: .releasing)
 
         let thread = Thread { [weak self] in
             self?.decodeLoop()
@@ -208,10 +213,10 @@ final class RemoteAudioMixer: @unchecked Sendable {
         if channelStates[key] == nil {
             let state = ChannelPlaybackState(channelKey: key)
             if let slot = userSlots[username] {
-                state.gainSlot = slot
+                state.gainSlot.store(slot, ordering: .releasing)
             }
             channelStates[key] = state
-            renderChannelsNeedUpdate.store(true, ordering: .releasing)
+            stageRenderSnapshot()
         }
     }
 
@@ -227,7 +232,8 @@ final class RemoteAudioMixer: @unchecked Sendable {
             let channelKey = download.channelKey
 
             guard !oggData.isEmpty else { return }
-            let job = DecodeJob(channelKey: channelKey, oggData: oggData)
+            guard let state = channelStates[channelKey] else { return }
+            let job = DecodeJob(channelKey: channelKey, oggData: oggData, playbackState: state)
             queueLock.sync { decodeQueue.append(job) }
         } else {
             activeDownloads[guid] = download
@@ -247,7 +253,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
                 slotInUse[slot] = false
                 userSlots.removeValue(forKey: username)
                 for (_, state) in channelStates where state.channelKey.username == username {
-                    state.gainSlot = -1
+                    state.gainSlot.store(-1, ordering: .releasing)
                 }
             }
         }
@@ -259,7 +265,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
                     slotInUse[freeSlot] = true
                     userSlots[username] = freeSlot
                     for (_, state) in channelStates where state.channelKey.username == username {
-                        state.gainSlot = freeSlot
+                        state.gainSlot.store(freeSlot, ordering: .releasing)
                     }
                 }
             }
@@ -274,8 +280,19 @@ final class RemoteAudioMixer: @unchecked Sendable {
         }
 
         if !inactiveKeys.isEmpty {
-            renderChannelsNeedUpdate.store(true, ordering: .releasing)
+            stageRenderSnapshot()
         }
+    }
+
+    /// Prepare a render channel snapshot for the render thread to pick up.
+    /// Only writes if the previous snapshot was consumed (flag is false).
+    /// Called from main thread only.
+    private func stageRenderSnapshot() {
+        guard !stagedRenderChannelsReady.load(ordering: .acquiring) else {
+            return  // Render thread hasn't consumed previous snapshot yet — skip
+        }
+        stagedRenderChannels = Array(channelStates.values)
+        stagedRenderChannelsReady.store(true, ordering: .releasing)
     }
 
     // MARK: - Decode Thread
@@ -311,11 +328,9 @@ final class RemoteAudioMixer: @unchecked Sendable {
                 samples = monoChannel
             }
 
-            guard let state = channelStates[job.channelKey] else { return }
-
             let buffer = PlaybackBuffer(samples: samples)
-            state.nextBuffer = buffer
-            state.nextReady.store(true, ordering: .releasing)
+            job.playbackState.nextBuffer = buffer
+            job.playbackState.nextReady.store(true, ordering: .releasing)
 
         } catch {
             logger.error("Failed to decode OGG for \(job.channelKey.username)/\(job.channelKey.channelIndex): \(error)")
@@ -359,13 +374,14 @@ final class RemoteAudioMixer: @unchecked Sendable {
         ensureTempBuffer(frameCount: frameCount)
         guard let temp = tempBuffer else { return }
 
+        // Pick up staged channel snapshot from main thread if available
+        if stagedRenderChannelsReady.exchange(false, ordering: .acquiringAndReleasing) {
+            renderChannels = stagedRenderChannels
+        }
+
         // Track sample position and detect boundary
         var pos = samplePosition.load(ordering: .acquiring)
         let willCrossBoundary = pos + frameCount >= intervalLength
-
-        if willCrossBoundary || renderChannelsNeedUpdate.exchange(false, ordering: .acquiringAndReleasing) {
-            updateRenderChannelsSnapshot()
-        }
 
         // At interval boundary, swap buffers
         if willCrossBoundary {
@@ -394,7 +410,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
         for channel in renderChannels {
             guard let buffer = channel.currentBuffer else { continue }
 
-            let slot = channel.gainSlot
+            let slot = channel.gainSlot.load(ordering: .acquiring)
             guard slot >= 0, slot < userGains.count else { continue }
             let gain = userGains[slot]
             guard gain > 0.001 else { continue }
@@ -421,12 +437,4 @@ final class RemoteAudioMixer: @unchecked Sendable {
         }
     }
 
-    /// Snapshot the channel states array for render thread iteration.
-    /// Uses removeAll(keepingCapacity:) to reuse the existing array buffer.
-    private func updateRenderChannelsSnapshot() {
-        renderChannels.removeAll(keepingCapacity: true)
-        for state in channelStates.values {
-            renderChannels.append(state)
-        }
-    }
 }
