@@ -9,6 +9,7 @@ import Foundation
 import CoreAudioKit
 import AVFoundation
 @preconcurrency import AVFAudio
+import Synchronization
 
 #if os(iOS) || os(visionOS)
 import UIKit
@@ -76,8 +77,9 @@ public class SimplePlayEngine {
     // This block will be called every render cycle and will receive MIDI events
     private let midiOutBlock: AUMIDIOutputEventBlock = { sampleTime, cable, length, data in return noErr }
     
-    // This block can be used to send MIDI UMP events to the Audio Unit
-    var scheduleMIDIEventListBlock: AUMIDIEventListBlock? = nil
+    // This block can be used to send MIDI UMP events to the Audio Unit.
+    // Protected by Mutex because it's written on @MainActor but read from CoreMIDI thread.
+    private let _scheduleMIDIEventListBlock = Mutex<AUMIDIEventListBlock?>(nil)
     
     // MARK: Initialization
     
@@ -95,8 +97,10 @@ public class SimplePlayEngine {
     
     private func setupMIDI() {
         if !MIDIManager.shared.setupPort(midiProtocol: MIDIProtocolID._2_0, receiveBlock: { [weak self] eventList, _ in
-            if let scheduleMIDIEventListBlock = self?.scheduleMIDIEventListBlock {
-                _ = scheduleMIDIEventListBlock(AUEventSampleTimeImmediate, 0, eventList)
+            guard let self else { return }
+            let block = self._scheduleMIDIEventListBlock.withLock { $0 }
+            if let block {
+                _ = block(AUEventSampleTimeImmediate, 0, eventList)
             }
         }) {
             fatalError("Failed to setup Core MIDI")
@@ -260,7 +264,7 @@ public class SimplePlayEngine {
         
         // Internal function to resume playing and call the completion handler.
         func rewiringComplete() {
-            scheduleMIDIEventListBlock = auAudioUnit.scheduleMIDIEventListBlock
+            _scheduleMIDIEventListBlock.withLock { $0 = auAudioUnit.scheduleMIDIEventListBlock }
             if isPlaying {
                 player.play()
             }

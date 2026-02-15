@@ -135,9 +135,9 @@ final class RemoteAudioMixer: @unchecked Sendable {
         return arr
     }()
     /// Staged channel snapshot: written by main thread, picked up by render thread.
-    /// Protocol: flag=false → main thread owns staging area. flag=true → render thread may read.
-    private var stagedRenderChannels: [ChannelPlaybackState] = []
-    private let stagedRenderChannelsReady = Atomic<Bool>(false)
+    /// Protected by Mutex (os_unfair_lock) — hold time is nanoseconds (array pointer copy).
+    /// nil = no pending snapshot; non-nil = main thread staged an update for render thread.
+    private let stagedRenderChannels = Mutex<[ChannelPlaybackState]?>(nil)
 
     /// Pre-allocated temp buffer for reading from PlaybackBuffer in mix loop
     private var tempBuffer: UnsafeMutablePointer<Float>?
@@ -152,7 +152,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
         _intervalLength.store(config.intervalLengthInSamples, ordering: .releasing)
         _sampleRate.store(Int(config.sampleRate), ordering: .releasing)
         samplePosition.store(0, ordering: .releasing)
-        stagedRenderChannelsReady.store(false, ordering: .releasing)
+        stagedRenderChannels.withLock { $0 = nil }
 
         let thread = Thread { [weak self] in
             self?.decodeLoop()
@@ -285,14 +285,9 @@ final class RemoteAudioMixer: @unchecked Sendable {
     }
 
     /// Prepare a render channel snapshot for the render thread to pick up.
-    /// Only writes if the previous snapshot was consumed (flag is false).
     /// Called from main thread only.
     private func stageRenderSnapshot() {
-        guard !stagedRenderChannelsReady.load(ordering: .acquiring) else {
-            return  // Render thread hasn't consumed previous snapshot yet — skip
-        }
-        stagedRenderChannels = Array(channelStates.values)
-        stagedRenderChannelsReady.store(true, ordering: .releasing)
+        stagedRenderChannels.withLock { $0 = Array(channelStates.values) }
     }
 
     // MARK: - Decode Thread
@@ -361,7 +356,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
     // MARK: - Render Thread API
 
     /// Mix remote audio into the output buffer. Called from DSPKernel.process().
-    /// Must be RT-safe: no allocations, no locks.
+    /// Nearly RT-safe: only a brief Mutex lock (os_unfair_lock, nanosecond hold time) for snapshot pickup.
     /// userGains is passed as UnsafeBufferPointer to avoid Array retain/release on the render thread.
     func mixInto(outputBufferList: UnsafeMutablePointer<AudioBufferList>,
                  frameCount: Int,
@@ -375,8 +370,11 @@ final class RemoteAudioMixer: @unchecked Sendable {
         guard let temp = tempBuffer else { return }
 
         // Pick up staged channel snapshot from main thread if available
-        if stagedRenderChannelsReady.exchange(false, ordering: .acquiringAndReleasing) {
-            renderChannels = stagedRenderChannels
+        stagedRenderChannels.withLock { staged in
+            if let channels = staged {
+                renderChannels = channels
+                staged = nil
+            }
         }
 
         // Track sample position and detect boundary
