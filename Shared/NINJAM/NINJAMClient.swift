@@ -58,6 +58,12 @@ final class NINJAMClient: ObservableObject {
     @Published var connectionStatus: String = "Not connected"
     @Published var lastError: String?
 
+    // Timing properties for UI
+    @Published var bpm: Int = 0
+    @Published var bpi: Int = 0
+    @Published var currentBeat: Int = 0
+    @Published var intervalProgress: Double = 0.0
+
     struct ServerInfo {
         let host: String
         let port: UInt16
@@ -83,6 +89,11 @@ final class NINJAMClient: ObservableObject {
 
     // Keepalive timer runs on main thread
     private var keepaliveTimer: Timer?
+
+    // Interval timing
+    private var intervalTimer: Timer?
+    private var intervalStartTime: Date?
+    private var intervalDuration: TimeInterval = 0
 
     private let logger = Logger(subsystem: "com.jamauv3", category: "NINJAMClient")
 
@@ -172,9 +183,10 @@ final class NINJAMClient: ObservableObject {
 
     /// Disconnect from the server
     func disconnect() {
-        // Stop keepalive timer
+        // Stop timers
         keepaliveTimer?.invalidate()
         keepaliveTimer = nil
+        stopIntervalTimer()
 
         connection?.cancel()
         connection = nil
@@ -384,12 +396,18 @@ final class NINJAMClient: ObservableObject {
             return
         }
 
-        serverInfo?.bpm = Int(config.beatsPerMinute)
-        serverInfo?.bpi = Int(config.beatsPerInterval)
+        let newBpm = Int(config.beatsPerMinute)
+        let newBpi = Int(config.beatsPerInterval)
+
+        serverInfo?.bpm = newBpm
+        serverInfo?.bpi = newBpi
+        bpm = newBpm
+        bpi = newBpi
 
         logger.info("Config: BPM=\(config.beatsPerMinute), BPI=\(config.beatsPerInterval), interval=\(config.intervalDuration)s")
 
-        delegate?.client(self, didReceiveConfig: Int(config.beatsPerMinute), bpi: Int(config.beatsPerInterval))
+        startIntervalTimer()
+        delegate?.client(self, didReceiveConfig: newBpm, bpi: newBpi)
     }
 
     private func handleUserInfoChange(_ payload: Data) {
@@ -512,5 +530,48 @@ final class NINJAMClient: ObservableObject {
             setState(.error("Connection timeout"))
             disconnect()
         }
+    }
+
+    // MARK: - Interval Timing
+
+    private func startIntervalTimer() {
+        intervalTimer?.invalidate()
+
+        guard bpm > 0, bpi > 0 else { return }
+
+        intervalDuration = TimeInterval(bpi) * 60.0 / TimeInterval(bpm)
+        intervalStartTime = Date()
+        currentBeat = 0
+        intervalProgress = 0.0
+
+        // ~30 Hz update rate for smooth progress bar
+        intervalTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            self?.updateIntervalProgress()
+        }
+    }
+
+    private func stopIntervalTimer() {
+        intervalTimer?.invalidate()
+        intervalTimer = nil
+        intervalStartTime = nil
+        intervalDuration = 0
+        bpm = 0
+        bpi = 0
+        currentBeat = 0
+        intervalProgress = 0.0
+    }
+
+    private func updateIntervalProgress() {
+        guard let startTime = intervalStartTime, intervalDuration > 0 else { return }
+
+        let elapsed = Date().timeIntervalSince(startTime)
+
+        // Wrap around when interval completes
+        let elapsedInInterval = elapsed.truncatingRemainder(dividingBy: intervalDuration)
+        let progress = elapsedInInterval / intervalDuration
+        let beat = Int(progress * Double(bpi))
+
+        intervalProgress = progress
+        currentBeat = beat
     }
 }

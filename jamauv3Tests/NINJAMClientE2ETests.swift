@@ -290,4 +290,173 @@ class NINJAMProtocolE2ETests: XCTestCase {
             }
         }
     }
+
+    /// Test: Receive OGG audio fragments from other users
+    func testReceiveOggFragments() async throws {
+        guard let config = E2ETestConfig.shared else {
+            throw XCTSkip("No test configuration available. Set NINJAM_TEST_* env vars or save connection in app.")
+        }
+
+        let fragmentReceivedExpectation = expectation(description: "Should receive OGG audio fragments")
+        fragmentReceivedExpectation.assertForOverFulfill = false // Allow multiple fragments
+
+        var audioStreams: [Data: (username: String, channelIndex: Int, chunks: [Data])] = [:]
+        var receivedFragmentCount = 0
+        var completedStreamCount = 0
+
+        let endpoint = NWEndpoint.hostPort(
+            host: NWEndpoint.Host(config.host),
+            port: NWEndpoint.Port(rawValue: config.port)!
+        )
+
+        let connection = NWConnection(to: endpoint, using: .tcp)
+        var receiveBuffer = Data()
+        var isAuthenticated = false
+        var hasSentChannelInfo = false
+
+        func receiveNext() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
+                guard let data = data, error == nil else { return }
+                receiveBuffer.append(data)
+
+                // Parse complete messages from buffer
+                while receiveBuffer.count >= NINJAMMessageHeader.size {
+                    guard let header = NINJAMMessageHeader(data: receiveBuffer) else { break }
+                    let totalLen = NINJAMMessageHeader.size + Int(header.payloadLength)
+                    guard receiveBuffer.count >= totalLen else { break }
+
+                    let payload = receiveBuffer.subdata(in: NINJAMMessageHeader.size..<totalLen)
+                    receiveBuffer.removeSubrange(0..<totalLen)
+
+                    switch header.type {
+                    case NINJAMServerMessageType.authChallenge.rawValue:
+                        if let challenge = ServerAuthChallenge(data: payload) {
+                            let authUser = ClientAuthUser.create(
+                                username: config.username,
+                                password: config.password,
+                                challenge: challenge.challenge,
+                                agreesToLicense: true
+                            )
+                            connection.send(content: authUser.buildMessage(), completion: .contentProcessed { _ in })
+                            print("✓ Sent AUTH_USER")
+                        }
+
+                    case NINJAMServerMessageType.authReply.rawValue:
+                        if let reply = ServerAuthReply(data: payload) {
+                            XCTAssertTrue(reply.isSuccess, "Authentication should succeed")
+                            isAuthenticated = true
+                            print("✓ Authenticated as \(reply.effectiveUsername ?? config.username)")
+
+                            // Send our channel info to fully join the session
+                            let channelInfo = ClientSetChannelInfo(channels: [
+                                ClientSetChannelInfo.Channel(name: "test")
+                            ])
+                            connection.send(content: channelInfo.buildMessage(), completion: .contentProcessed { _ in })
+                            hasSentChannelInfo = true
+                            print("✓ Sent channel info")
+                        }
+
+                    case NINJAMServerMessageType.configChangeNotify.rawValue:
+                        if let config = ServerConfigChangeNotify(data: payload) {
+                            print("✓ Config: \(config.beatsPerMinute) BPM, \(config.beatsPerInterval) BPI (\(config.intervalDuration)s)")
+                        }
+
+                    case NINJAMServerMessageType.userInfoChangeNotify.rawValue:
+                        if let userInfo = ServerUserInfoChangeNotify(data: payload) {
+                            print("✓ User info: \(userInfo.channels.count) channels")
+                            for channel in userInfo.channels {
+                                print("  - \(channel.username)/\(channel.channelName) (active: \(channel.isActive))")
+                            }
+                        }
+
+                    case NINJAMServerMessageType.downloadIntervalBegin.rawValue:
+                        if let begin = ServerDownloadIntervalBegin(data: payload) {
+                            print("✓ Audio BEGIN: \(begin.username) ch\(begin.channelIndex)")
+                            print("  GUID: \(begin.guid.map { String(format: "%02x", $0) }.joined())")
+                            print("  Size: \(begin.estimatedSize) bytes")
+                            print("  Format: \(begin.isOggVorbis ? "OGG Vorbis" : "Unknown (0x\(String(begin.fourCC, radix: 16)))")")
+
+                            XCTAssertTrue(begin.isOggVorbis, "Should receive OGG Vorbis audio")
+
+                            // Initialize stream tracking
+                            audioStreams[begin.guid] = (begin.username, Int(begin.channelIndex), [])
+                        }
+
+                    case NINJAMServerMessageType.downloadIntervalWrite.rawValue:
+                        if let write = ServerDownloadIntervalWrite(data: payload) {
+                            // Accumulate audio data
+                            if var stream = audioStreams[write.guid] {
+                                stream.chunks.append(write.audioData)
+                                audioStreams[write.guid] = stream
+
+                                receivedFragmentCount += 1
+                                print("✓ Audio WRITE: \(write.audioData.count) bytes (end: \(write.isEndOfInterval))")
+
+                                if write.isEndOfInterval {
+                                    // Complete stream received
+                                    let totalSize = stream.chunks.reduce(0) { $0 + $1.count }
+                                    print("✓ Audio COMPLETE: \(stream.username) ch\(stream.channelIndex)")
+                                    print("  Total: \(totalSize) bytes in \(stream.chunks.count) fragments")
+
+                                    // Combine all chunks into a single OGG stream
+                                    var completeOgg = Data()
+                                    for chunk in stream.chunks {
+                                        completeOgg.append(chunk)
+                                    }
+
+                                    // Verify OGG header (starts with "OggS")
+                                    XCTAssertGreaterThan(completeOgg.count, 4, "OGG data should not be empty")
+                                    if completeOgg.count >= 4 {
+                                        let header = String(data: completeOgg.prefix(4), encoding: .ascii)
+                                        XCTAssertEqual(header, "OggS", "Should start with OGG capture pattern")
+                                        print("✓ OGG header verified: \(completeOgg.count) bytes")
+                                    }
+
+                                    completedStreamCount += 1
+                                    audioStreams.removeValue(forKey: write.guid)
+
+                                    // Fulfill after receiving at least one complete stream
+                                    if completedStreamCount >= 1 {
+                                        fragmentReceivedExpectation.fulfill()
+                                    }
+                                }
+                            }
+                        }
+
+                    case NINJAMServerMessageType.keepalive.rawValue:
+                        // Send keepalive back
+                        connection.send(content: KeepaliveMessage.buildMessage(), completion: .contentProcessed { _ in })
+
+                    default:
+                        break
+                    }
+                }
+
+                if !isComplete {
+                    receiveNext()
+                }
+            }
+        }
+
+        connection.stateUpdateHandler = { state in
+            if case .ready = state {
+                print("✓ TCP connected")
+                receiveNext()
+            }
+        }
+
+        connection.start(queue: .global())
+
+        // Wait up to 60 seconds for audio fragments (some servers have long intervals)
+        await fulfillment(of: [fragmentReceivedExpectation], timeout: 60.0)
+
+        connection.cancel()
+
+        print("\n=== Test Summary ===")
+        print("Fragments received: \(receivedFragmentCount)")
+        print("Completed streams: \(completedStreamCount)")
+
+        XCTAssertGreaterThan(receivedFragmentCount, 0, "Should receive at least one audio fragment")
+        XCTAssertGreaterThan(completedStreamCount, 0, "Should receive at least one complete audio stream")
+    }
 }

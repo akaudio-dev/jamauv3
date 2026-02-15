@@ -77,8 +77,29 @@ struct jamauv3ExtensionMainView: View {
             }
             .padding()
             
+            // Interval timing section (visible when connected)
+            if ninjamClient.isConnected && ninjamClient.bpm > 0 {
+                Divider()
+
+                VStack(spacing: 8) {
+                    // BPM / BPI display
+                    HStack {
+                        Text("\(ninjamClient.bpm) BPM, \(ninjamClient.bpi) BPI")
+                            .font(.subheadline.monospacedDigit())
+                        Spacer()
+                        Text("\(ninjamClient.currentBeat + 1)/\(ninjamClient.bpi)")
+                            .font(.subheadline.monospacedDigit().bold())
+                    }
+
+                    // Interval progress bar
+                    ProgressView(value: ninjamClient.intervalProgress)
+                        .tint(.green)
+                }
+                .padding(.horizontal)
+            }
+
             Divider()
-            
+
             // User gains mixer section
             VStack(alignment: .leading, spacing: 8) {
                 Text("User Gains")

@@ -12,11 +12,11 @@
 │   ├── NINJAMClient.swift      # Main client (@MainActor, ObservableObject)
 │   └── NINJAMProtocol.swift    # All message types
 ├── jamauv3Extension/           # The AUv3 plugin
-│   ├── DSP/                    # Pure Swift audio processing
+│   ├── DSP/                    # Pure Swift audio processing (incl. CircularBuffer)
 │   ├── Common/UI/              # ConnectionSettings, AudioUnitViewController
 │   ├── Parameters/             # AU parameters
 │   └── UI/                     # Main SwiftUI view
-├── jamauv3Tests/               # Tests (NINJAMProtocolTests)
+├── jamauv3Tests/               # Tests (NINJAMProtocolTests, E2E tests)
 └── jamauv3/                    # Host app for testing
 ```
 
@@ -25,33 +25,14 @@
 **Working:**
 - ✅ NINJAM client: connect, authenticate, keepalive, receive messages
 - ✅ Protocol: all message types (auth, config, user info, chat, audio download)
-- ✅ SwiftUI UI with connection settings
+- ✅ SwiftUI UI with connection settings + interval timing (BPM/BPI, beat counter, progress bar)
 - ✅ OGG Vorbis **decoding** (libvorbis via CVorbis module from swift-vorbis package)
-- ✅ Pure Swift DSP kernel
-- ✅ 29 passing tests (protocol parsing, E2E auth)
+- ✅ Pure Swift DSP kernel + lock-free CircularBuffer (Synchronization.Atomic)
+- ✅ 32 passing tests (protocol parsing, E2E auth, OGG fragment reception)
 
 ## Next Steps (Priority Order)
 
-### 1. NINJAM Timing UI (High Priority - User Visibility)
-**File:** `jamauv3Extension/UI/jamauv3ExtensionMainView.swift`
-
-Add to NINJAMClient.swift:
-```swift
-@Published var bpm: Int = 120
-@Published var bpi: Int = 16
-@Published var currentBeat: Int = 0
-@Published var intervalProgress: Double = 0.0  // 0.0 to 1.0
-```
-
-Display in UI (between connection settings and user gains):
-- Interval progress bar
-- "120 BPM, 16 BPI" display
-- Beat counter "9/16"
-- Time remaining in interval
-
-Start interval timer when receiving CONFIG_CHANGE_NOTIFY.
-
-### 2. OGG Vorbis Encoding (High Priority - Core Functionality)
+### 1. OGG Vorbis Encoding (High Priority - Core Functionality)
 **New file:** `jamauv3Extension/Common/Audio/OggVorbisEncoder.swift`
 
 Create Swift wrapper for libvorbis encoding (similar to existing OggVorbisDecoder.swift):
@@ -62,7 +43,7 @@ Create Swift wrapper for libvorbis encoding (similar to existing OggVorbisDecode
 
 Write tests for encode/decode round-trip.
 
-### 3. Interval Buffer System (High Priority - Core Functionality)
+### 2. Interval Buffer System (High Priority - Core Functionality)
 **New file:** `jamauv3Extension/DSP/IntervalBuffer.swift`
 
 Implement:
@@ -71,19 +52,19 @@ Implement:
 - Encode to OGG when interval completes
 - Send via `ClientUploadIntervalBegin` + `ClientUploadIntervalWrite` messages
 
-### 4. Audio Mixing & Playback (Medium Priority)
+### 3. Audio Mixing & Playback (Medium Priority)
 Implement:
 - Decode received OGG streams (already have decoder)
 - Mix multiple remote user streams
 - Sync playback with interval boundaries
 - Route to DSP output
 
-### 5. Integration (Medium Priority)
+### 4. Integration (Medium Priority)
 - Connect NINJAMClient to DSP kernel (bidirectional audio flow)
 - Wire up per-user gain controls (already in UI)
 - Implement metronome
 
-### 6. Polish (Lower Priority)
+### 5. Polish (Lower Priority)
 - Chat UI (protocol support exists)
 - Settings (audio quality, latency compensation)
 - Error handling improvements
@@ -92,7 +73,7 @@ Implement:
 - **NINJAM port:** 2049
 - **Protocol:** OGG Vorbis @ 64-96 kbps, BPM/BPI-based intervals
 - **Common settings:** 120 BPM, 16 BPI = 8 second intervals
-- **NINJAMClient:** Use from UI via `@ObservedObject` - has `isConnected`, `connectionStatus`, `lastError`
+- **NINJAMClient:** Use from UI via `@ObservedObject` - has `isConnected`, `connectionStatus`, `lastError`, `bpm`, `bpi`, `currentBeat`, `intervalProgress`
 
 ## Reference Codebases
 - **JamTaba:** `~/work/github/JamTaba/src/Common/ninjam/` - Modern Qt client
