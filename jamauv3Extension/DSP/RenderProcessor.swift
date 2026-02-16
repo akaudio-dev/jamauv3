@@ -29,8 +29,7 @@ final class RenderProcessor: @unchecked Sendable {
     
     /// Creates the internal render block for the Audio Unit.
     func internalRenderBlock() -> AUInternalRenderBlock {
-        // Capture self weakly to avoid retain cycles, then upgrade to strong for the block
-        return { [kernel, inputBus] (
+        return { [kernel] (
             actionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
             timestamp: UnsafePointer<AudioTimeStamp>,
             frameCount: AUAudioFrameCount,
@@ -39,52 +38,30 @@ final class RenderProcessor: @unchecked Sendable {
             realtimeEventListHead: UnsafePointer<AURenderEvent>?,
             pullInputBlock: AURenderPullInputBlock?
         ) -> AUAudioUnitStatus in
-            
+
             // Check frame count limit
             if frameCount > kernel.maximumFramesToRender() {
                 return kAudioUnitErr_TooManyFramesToProcess
             }
-            
-            // Pull input
-            var pullFlags: AudioUnitRenderActionFlags = []
-            let err = inputBus.pullInput(
-                actionFlags: &pullFlags,
-                timestamp: timestamp,
-                frameCount: frameCount,
-                inputBusNumber: 0,
-                pullInputBlock: pullInputBlock
-            )
-            
-            if err != noErr {
-                return err
+
+            // Pull input directly into the output buffer (in-place processing).
+            // The host delivers input audio into the output buffer, and we process in-place.
+            if let pullBlock = pullInputBlock {
+                var pullFlags: AudioUnitRenderActionFlags = []
+                let err = pullBlock(&pullFlags, timestamp, frameCount, 0, outputData)
+                if err != noErr { return err }
             }
-            
-            guard let inAudioBufferList = inputBus.mutableAudioBufferList else {
-                return kAudioUnitErr_Uninitialized
-            }
-            
-            // Handle null output buffer pointers - process in-place
-            let outBuffers = UnsafeMutableAudioBufferListPointer(outputData)
-            let inBuffers = UnsafeMutableAudioBufferListPointer(inAudioBufferList)
-            
-            if outBuffers[0].mData == nil {
-                for i in 0..<outBuffers.count {
-                    if i < inBuffers.count {
-                        outBuffers[i].mData = inBuffers[i].mData
-                    }
-                }
-            }
-            
-            // Process with events
+
+            // Process in-place: input and output are the same buffer
             Self.processWithEvents(
                 kernel: kernel,
-                inBufferList: inAudioBufferList,
+                inBufferList: outputData,
                 outBufferList: outputData,
                 timestamp: timestamp,
                 frameCount: frameCount,
                 events: realtimeEventListHead
             )
-            
+
             return noErr
         }
     }

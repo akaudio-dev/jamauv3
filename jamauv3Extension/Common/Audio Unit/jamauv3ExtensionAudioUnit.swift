@@ -6,6 +6,9 @@
 //
 
 import AVFoundation
+import os
+
+private let log = Logger(subsystem: "jamauv3.com.jamauv3Extension", category: "AudioUnit")
 
 public class jamauv3ExtensionAudioUnit: AUAudioUnit, @unchecked Sendable
 {
@@ -45,7 +48,8 @@ public class jamauv3ExtensionAudioUnit: AUAudioUnit, @unchecked Sendable
     
     public override var channelCapabilities: [NSNumber] {
         get {
-            return [NSNumber(value: 2), NSNumber(value: 2)]
+            // [-1, -1] means "any N-in, N-out where N matches" — maximum host flexibility
+            return [NSNumber(value: -1), NSNumber(value: -1)]
         }
     }
     
@@ -57,6 +61,8 @@ public class jamauv3ExtensionAudioUnit: AUAudioUnit, @unchecked Sendable
             kernel.setMaximumFramesToRender(newValue)
         }
     }
+
+    public override var canProcessInPlace: Bool { true }
 
     public override var shouldBypassEffect: Bool {
         get {
@@ -79,21 +85,20 @@ public class jamauv3ExtensionAudioUnit: AUAudioUnit, @unchecked Sendable
 
     // Allocate resources required to render.
     public override func allocateRenderResources() throws {
-        let inputChannelCount = self.inputBusses[0].format.channelCount
-        let outputChannelCount = self.outputBusses[0].format.channelCount
-        
-        if outputChannelCount != inputChannelCount {
-            setRenderResourcesAllocated(false)
-            throw NSError(domain: NSOSStatusErrorDomain, code: Int(kAudioUnitErr_FailedInitialization), userInfo: nil)
-        }
+        let inFmt = self.inputBusses[0].format
+        let outFmt = self.outputBusses[0].format
+        let inputChannelCount = inFmt.channelCount
+        let outputChannelCount = outFmt.channelCount
+
+        log.info("allocateRenderResources: input=\(inFmt.sampleRate, privacy: .public)Hz/\(inputChannelCount, privacy: .public)ch output=\(outFmt.sampleRate, privacy: .public)Hz/\(outputChannelCount, privacy: .public)ch maxFrames=\(self.maximumFramesToRender, privacy: .public)")
 
         inputBus.allocateRenderResources(maxFrames: self.maximumFramesToRender)
 
         kernel.midiOutputEventBlock = self.midiOutputEventListBlock
         kernel.musicalContextBlock = self.musicalContextBlock
-        kernel.initialize(inputChannelCount: Int(inputChannelCount), 
-                         outputChannelCount: Int(outputChannelCount), 
-                         sampleRate: outputBus!.format.sampleRate)
+        kernel.initialize(inputChannelCount: Int(inputChannelCount),
+                         outputChannelCount: Int(outputChannelCount),
+                         sampleRate: outFmt.sampleRate)
         renderProcessor?.setChannelCount(input: UInt32(inputChannelCount), output: UInt32(outputChannelCount))
 
         try super.allocateRenderResources()

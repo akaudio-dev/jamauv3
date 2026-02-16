@@ -278,7 +278,7 @@ public struct ServerDownloadIntervalBegin {
     public let username: String
 
     public var isOggVorbis: Bool {
-        fourCC == 0x7667674F  // 'OGGv' little-endian
+        fourCC == 0x7647474F  // MAKE_NJ_FOURCC('O','G','G','v')
     }
 
     public init?(data: Data) {
@@ -522,6 +522,47 @@ public struct ClientChatMessage {
     }
 }
 
+/// Client Set User Mask (0x81)
+/// Subscribes/unsubscribes to remote user channels.
+/// Payload contains one or more (username + channelMask) pairs.
+public struct ClientSetUserMask {
+    public struct UserSubscription {
+        public let username: String
+        public let channelMask: UInt32  // bitmask: bit N = subscribe to channel N
+
+        public init(username: String, channelMask: UInt32 = 0xFFFFFFFF) {
+            self.username = username
+            self.channelMask = channelMask
+        }
+    }
+
+    public let subscriptions: [UserSubscription]
+
+    public init(subscriptions: [UserSubscription]) {
+        self.subscriptions = subscriptions
+    }
+
+    public func serialize() -> Data {
+        var data = Data()
+        for sub in subscriptions {
+            data.append(Data(sub.username.utf8))
+            data.append(0) // null terminator
+            var mask = sub.channelMask.littleEndian
+            data.append(Data(bytes: &mask, count: 4))
+        }
+        return data
+    }
+
+    public func buildMessage() -> Data {
+        let payload = serialize()
+        let header = NINJAMMessageHeader(
+            type: NINJAMClientMessageType.setUserMask.rawValue,
+            payloadLength: UInt32(payload.count)
+        )
+        return header.serialize() + payload
+    }
+}
+
 /// Client Upload Interval Begin (0x83)
 /// Announces start of audio upload for a local channel
 public struct ClientUploadIntervalBegin {
@@ -530,8 +571,8 @@ public struct ClientUploadIntervalBegin {
     public let fourCC: UInt32    // 'OGGv' (0x7667674F) for Vorbis, 0 for silence
     public let channelIndex: UInt8
 
-    /// OGG Vorbis fourCC value ('OGGv' little-endian)
-    public static let oggVorbisFourCC: UInt32 = 0x7667674F
+    /// OGG Vorbis fourCC value: MAKE_NJ_FOURCC('O','G','G','v') = 'O' | ('G'<<8) | ('G'<<16) | ('v'<<24)
+    public static let oggVorbisFourCC: UInt32 = 0x7647474F
 
     /// Create an audio upload begin message with a random GUID
     public static func audio(channelIndex: UInt8, estimatedSize: UInt32 = 0) -> ClientUploadIntervalBegin {

@@ -8,6 +8,7 @@
 import Combine
 import CoreAudioKit
 import os
+import Synchronization
 import SwiftUI
 
 private let log = Logger(subsystem: "jamauv3.com.jamauv3Extension", category: "AudioUnitViewController")
@@ -24,6 +25,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
     private let ninjamClient = NINJAMClient()
     private var intervalBuffer: IntervalBuffer?
     private var remoteAudioMixer: RemoteAudioMixer?
+    private var diagnosticTask: Task<Void, Never>?
 
 	/* iOS View lifcycle
 	public override func viewWillAppear(_ animated: Bool) {
@@ -108,11 +110,18 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
 
     /// Start interval capture when connected with valid config
     private func startIntervalCapture() {
-        guard let auUnit = audioUnit as? jamauv3ExtensionAudioUnit else { return }
+        guard let auUnit = audioUnit as? jamauv3ExtensionAudioUnit else {
+            log.error("startIntervalCapture: audioUnit is nil or wrong type (audioUnit=\(String(describing: self.audioUnit)))")
+            return
+        }
         let sampleRate = auUnit.kernel.sampleRate
         let bpm = ninjamClient.bpm
         let bpi = ninjamClient.bpi
-        guard bpm > 0, bpi > 0 else { return }
+        guard bpm > 0, bpi > 0 else {
+            log.error("startIntervalCapture: invalid config bpm=\(bpm) bpi=\(bpi)")
+            return
+        }
+        log.info("startIntervalCapture: sampleRate=\(sampleRate) bpm=\(bpm) bpi=\(bpi)")
 
         let config = IntervalConfig(bpm: bpm, bpi: bpi, sampleRate: sampleRate)
         let buffer = IntervalBuffer(config: config)
@@ -133,6 +142,9 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         buffer.start()
 
         startRemoteAudioMixer(config: config, kernel: auUnit.kernel)
+
+        // Periodic diagnostic: log mixer pipeline counters every 5 seconds
+        startMixerDiagnostics()
     }
 
     /// Stop interval capture on disconnect
@@ -165,11 +177,39 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
     }
 
     private func stopRemoteAudioMixer() {
+        diagnosticTask?.cancel()
+        diagnosticTask = nil
         remoteAudioMixer?.stop()
         if let auUnit = audioUnit as? jamauv3ExtensionAudioUnit {
             auUnit.kernel.remoteAudioMixer = nil
         }
         remoteAudioMixer = nil
+    }
+
+    private func startMixerDiagnostics() {
+        diagnosticTask?.cancel()
+        diagnosticTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard let mixer = self?.remoteAudioMixer else { break }
+                let decodes = mixer.decodeCount.load(ordering: .relaxed)
+                let swaps = mixer.bufferSwapCount.load(ordering: .relaxed)
+                let mixed = mixer.samplesMixedCount.load(ordering: .relaxed)
+                let mixCalls = mixer.mixCallCount.load(ordering: .relaxed)
+
+                // Read and reset peaks from DSPKernel
+                var inputPeakStr = "n/a"
+                var outputPeakStr = "n/a"
+                if let kernel = (self?.audioUnit as? jamauv3ExtensionAudioUnit)?.kernel {
+                    let inBits = kernel.inputPeak.exchange(0, ordering: .relaxed)
+                    inputPeakStr = String(format: "%.6f", Float(bitPattern: inBits))
+                    let outBits = kernel.outputPeak.exchange(0, ordering: .relaxed)
+                    outputPeakStr = String(format: "%.6f", Float(bitPattern: outBits))
+                }
+
+                log.info("Mixer stats: decodes=\(decodes) swaps=\(swaps) mixed=\(mixed) mixCalls=\(mixCalls) inPeak=\(inputPeakStr, privacy: .public) outPeak=\(outputPeakStr, privacy: .public)")
+            }
+        }
     }
 
     // MARK: - SwiftUI Configuration
@@ -209,6 +249,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
 
 extension AudioUnitViewController: NINJAMClientDelegate {
     func client(_ client: NINJAMClient, didChangeState state: NINJAMConnectionState) {
+        log.info("didChangeState: \(String(describing: state))")
         switch state {
         case .connected:
             // Start interval capture once we have config (triggered by didReceiveConfig)
@@ -221,6 +262,7 @@ extension AudioUnitViewController: NINJAMClientDelegate {
     }
 
     func client(_ client: NINJAMClient, didReceiveConfig bpm: Int, bpi: Int) {
+        log.info("didReceiveConfig: bpm=\(bpm) bpi=\(bpi) intervalBuffer=\(self.intervalBuffer != nil ? "exists" : "nil") isConnected=\(client.isConnected)")
         if intervalBuffer != nil {
             // Already capturing — update config
             updateIntervalConfig()

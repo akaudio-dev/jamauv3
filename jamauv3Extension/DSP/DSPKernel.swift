@@ -8,21 +8,27 @@
 import Foundation
 import AudioToolbox
 import CoreMIDI
+import Synchronization
 
 /// Pure Swift DSP kernel, safe for use from render thread.
 /// Uses only value types and avoids allocations in the process() hot path.
 final class DSPKernel: @unchecked Sendable {
-    
+
     // MARK: - Properties
 
     private(set) var sampleRate: Double = 44100.0
     private var userGains: [Float] = Array(repeating: 0.75, count: Int(jamauv3ExtensionNumUsers))
+
     private var noteEnvelope: Float = 1.0  // Initialize to 1.0 so audio passes through even without MIDI
     private var bypassed: Bool = false
     private var maxFramesToRender: AUAudioFrameCount = 1024
 
     /// Interval buffer for capturing local audio and encoding to OGG for NINJAM upload
     var intervalBuffer: IntervalBuffer?
+
+    /// Peak amplitude trackers (render thread writes, diagnostic timer reads)
+    let inputPeak = Atomic<UInt32>(0)   // Float bits stored as UInt32 for atomic access
+    let outputPeak = Atomic<UInt32>(0)
 
     /// Remote audio mixer for decoding and playing back other users' audio
     var remoteAudioMixer: RemoteAudioMixer?
@@ -104,6 +110,21 @@ final class DSPKernel: @unchecked Sendable {
         let inputBuffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputBufferList))
         let outputBuffers = UnsafeMutableAudioBufferListPointer(outputBufferList)
 
+        // Check if output buffer already has audio (host pre-fill for in-place processing?)
+        if outputBuffers.count >= 1, let outData = outputBuffers[0].mData {
+            let outFloats = outData.assumingMemoryBound(to: Float.self)
+            var peak: Float = 0
+            for i in 0..<Int(frameCount) {
+                let s = abs(outFloats[i])
+                if s > peak { peak = s }
+            }
+            let peakBits = peak.bitPattern
+            let currentBits = outputPeak.load(ordering: .relaxed)
+            if peakBits > currentBits {
+                outputPeak.store(peakBits, ordering: .relaxed)
+            }
+        }
+
         // Capture raw input for NINJAM upload (before envelope processing)
         if let intervalBuffer = intervalBuffer,
            inputBuffers.count >= 1,
@@ -113,6 +134,19 @@ final class DSPKernel: @unchecked Sendable {
             if inputBuffers.count >= 2, let inputDataR = inputBuffers[1].mData {
                 inputR = UnsafePointer(inputDataR.assumingMemoryBound(to: Float.self))
             }
+
+            // Track peak input amplitude for diagnostics
+            var peak: Float = 0
+            for i in 0..<Int(frameCount) {
+                let s = abs(inputL[i])
+                if s > peak { peak = s }
+            }
+            let peakBits = peak.bitPattern
+            let currentBits = inputPeak.load(ordering: .relaxed)
+            if peakBits > currentBits {
+                inputPeak.store(peakBits, ordering: .relaxed)
+            }
+
             intervalBuffer.captureAudio(inputL: inputL, inputR: inputR, frameCount: Int(frameCount))
         }
 

@@ -421,7 +421,31 @@ final class NINJAMClient: ObservableObject {
             logger.debug("  \(channel.username)/\(channel.channelName) active=\(channel.isActive)")
         }
 
+        // Subscribe to all active users' channels so the server sends us their audio
+        subscribeToActiveUsers(userInfo.channels)
+
         delegate?.client(self, didReceiveUserInfo: userInfo.channels)
+    }
+
+    /// Send SetUserMask (0x81) to subscribe to all active remote users.
+    /// Without this, the server may not send us download audio.
+    private func subscribeToActiveUsers(_ channels: [RemoteChannelInfo]) {
+        // Build subscriptions: subscribe to all channels for each active user
+        var subscriptionsByUser: [String: UInt32] = [:]
+        for channel in channels where channel.isActive {
+            let mask = subscriptionsByUser[channel.username] ?? 0
+            subscriptionsByUser[channel.username] = mask | (1 << UInt32(channel.channelIndex))
+        }
+
+        guard !subscriptionsByUser.isEmpty else { return }
+
+        let subscriptions = subscriptionsByUser.map { (username, mask) in
+            ClientSetUserMask.UserSubscription(username: username, channelMask: mask)
+        }
+        let userMask = ClientSetUserMask(subscriptions: subscriptions)
+        send(data: userMask.buildMessage())
+
+        logger.info("Subscribed to \(subscriptions.count) users: \(subscriptions.map { "\($0.username)(0x\(String($0.channelMask, radix: 16)))" }.joined(separator: ", "))")
     }
 
     private func handleDownloadIntervalBegin(_ payload: Data) {
@@ -471,7 +495,11 @@ final class NINJAMClient: ObservableObject {
     // MARK: - Sending
 
     private func send(data: Data) {
-        connection?.send(content: data, completion: .contentProcessed { [weak self] error in
+        guard let connection = connection else {
+            logger.error("send: no connection! data=\(data.count)B")
+            return
+        }
+        connection.send(content: data, completion: .contentProcessed { [weak self] error in
             if let error = error {
                 self?.logger.error("Send error: \(error.localizedDescription)")
             } else {

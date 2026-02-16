@@ -143,6 +143,12 @@ final class RemoteAudioMixer: @unchecked Sendable {
     private var tempBuffer: UnsafeMutablePointer<Float>?
     private var tempBufferSize: Int = 0
 
+    // MARK: - Diagnostics (atomic counters readable from main thread)
+    let bufferSwapCount = Atomic<Int>(0)
+    let samplesMixedCount = Atomic<Int>(0)
+    let decodeCount = Atomic<Int>(0)
+    let mixCallCount = Atomic<Int>(0)
+
     private let logger = Logger(subsystem: "com.jamauv3", category: "RemoteAudioMixer")
 
     // MARK: - Lifecycle
@@ -222,7 +228,9 @@ final class RemoteAudioMixer: @unchecked Sendable {
 
     /// Called with audio data fragments for a download.
     func receiveData(guid: Data, data: Data, isEnd: Bool) {
-        guard var download = activeDownloads[guid] else { return }
+        guard var download = activeDownloads[guid] else {
+            return
+        }
 
         download.data.append(data)
 
@@ -255,6 +263,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
                 for (_, state) in channelStates where state.channelKey.username == username {
                     state.gainSlot.store(-1, ordering: .releasing)
                 }
+                // logger.info("updateUserInfo: freed slot \(slot) for \(username)")
             }
         }
 
@@ -267,6 +276,9 @@ final class RemoteAudioMixer: @unchecked Sendable {
                     for (_, state) in channelStates where state.channelKey.username == username {
                         state.gainSlot.store(freeSlot, ordering: .releasing)
                     }
+                    // logger.info("updateUserInfo: assigned slot \(freeSlot) to \(username)")
+                } else {
+                    // logger.warning("updateUserInfo: no free slots for \(username)")
                 }
             }
         }
@@ -327,8 +339,10 @@ final class RemoteAudioMixer: @unchecked Sendable {
             job.playbackState.nextBuffer = buffer
             job.playbackState.nextReady.store(true, ordering: .releasing)
 
+            decodeCount.wrappingAdd(1, ordering: .relaxed)
+
         } catch {
-            logger.error("Failed to decode OGG for \(job.channelKey.username)/\(job.channelKey.channelIndex): \(error)")
+            logger.error("Failed to decode OGG: \(error)")
         }
     }
 
@@ -365,6 +379,8 @@ final class RemoteAudioMixer: @unchecked Sendable {
         let intervalLength = _intervalLength.load(ordering: .acquiring)
         guard intervalLength > 0 else { return }
 
+        mixCallCount.wrappingAdd(1, ordering: .relaxed)
+
         // Ensure temp buffer is large enough
         ensureTempBuffer(frameCount: frameCount)
         guard let temp = tempBuffer else { return }
@@ -387,6 +403,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
                 if channel.nextReady.exchange(false, ordering: .acquiringAndReleasing) {
                     channel.currentBuffer = channel.nextBuffer
                     channel.nextBuffer = nil
+                    bufferSwapCount.wrappingAdd(1, ordering: .relaxed)
                 }
             }
         }
@@ -415,6 +432,8 @@ final class RemoteAudioMixer: @unchecked Sendable {
 
             let samplesRead = buffer.read(into: temp, count: frameCount)
             guard samplesRead > 0 else { continue }
+
+            samplesMixedCount.wrappingAdd(samplesRead, ordering: .relaxed)
 
             // Additive mix: mono → stereo (equal L+R)
             for i in 0..<samplesRead {

@@ -38,6 +38,7 @@
 - ✅ Pure Swift DSP kernel + lock-free CircularBuffer (Synchronization.Atomic)
 - ✅ **Interval Buffer System**: sample-accurate capture, incremental OGG encoding, streaming upload
 - ✅ **Remote Audio Mixer**: receives OGG from remote users, decodes to PCM, double-buffered playback with RT-safe mixing
+- ✅ **Bidirectional audio**: local audio captured and sent to server, remote audio received and mixed into output
 - ✅ AudioUnitViewController wires IntervalBuffer + RemoteAudioMixer ↔ NINJAMClient (auto start/stop/config update)
 - ✅ Tests: protocol parsing, E2E auth, OGG encode/decode, interval serialization, remote mixer, memory leak detection
 
@@ -72,6 +73,7 @@ NINJAMClient delegate           decodeLoop() ~100Hz              DSPKernel.proce
 ### 1. Integration (High Priority)
 - Wire up per-user gain controls (already in UI, RemoteAudioMixer maps users to gain slots 0-7)
 - Implement metronome
+- Accept host's audio format dynamically (currently defaults to 44100 Hz)
 
 ### 2. Polish (Medium Priority)
 - Chat UI (protocol support exists)
@@ -85,6 +87,8 @@ NINJAMClient delegate           decodeLoop() ~100Hz              DSPKernel.proce
 - **NINJAMClient:** Use from UI via `@ObservedObject` - has `isConnected`, `connectionStatus`, `lastError`, `bpm`, `bpi`, `currentBeat`, `intervalProgress`
 - **Upload messages:** `ClientUploadIntervalBegin` (0x83, fourCC=`0x7667674F` for OGG, 0 for silence) + `ClientUploadIntervalWrite` (0x84, flags bit 0 = end of interval)
 - **IntervalConfig:** `IntervalConfig(bpm:bpi:sampleRate:)` → `intervalLengthInSamples` (e.g. 120 BPM, 16 BPI, 44100 Hz = 352800 samples)
+- **AU type:** `aumf` (Music Effect) — receives audio + MIDI, enables tempo/transport sync
+- **Render block:** Pulls input directly into the output buffer for in-place processing (`pullBlock(..., outputData)`). Do NOT use a separate BufferedInputBus for audio — hosts (e.g. Ableton) return `mDataByteSize=0` when pulling into a separate buffer. `channelCapabilities = [-1, -1]` (any matching N-in/N-out). `canProcessInPlace = true`
 - **IntervalBuffer:** 3-thread model (render → SPSC CircularBuffer → encoding thread → @MainActor callbacks). Start/stop managed by AudioUnitViewController via NINJAMClientDelegate
 - **RemoteAudioMixer:** 3-thread model (@MainActor accumulates OGG fragments → decode thread decodes to PCM → render thread mixes). Double-buffered: decode writes nextBuffer, render swaps at interval boundary. Uses PlaybackBuffer (flat linear buffer) not CircularBuffer. Lives in Shared/Audio/ (compiled into both host + extension)
 - **Download messages:** `ServerDownloadIntervalBegin` (0x04, GUID, username, channelIndex, fourCC) + `ServerDownloadIntervalWrite` (0x05, GUID, flags, audioData). Delegate passes fourCC so mixer can skip silence intervals

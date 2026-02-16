@@ -93,14 +93,14 @@ final class IntervalBuffer: @unchecked Sendable {
         samplePosition.store(0, ordering: .releasing)
         intervalBoundaryReached.store(false, ordering: .releasing)
 
-        // Send initial silence for the first partial interval
+        // Send initial silence for the first partial interval.
+        // Don't create encoder yet — the first interval is always partial/silence.
+        // The encoder will be created at the first interval boundary in finalizeAndStartNewInterval().
+        // currentGUID stays as Data(count: 16) (all zeros) to match the silence GUID.
         let silenceBegin = ClientUploadIntervalBegin.silence(channelIndex: channelIndex)
         if let onUploadBegin = onUploadBegin {
             Task { @MainActor in onUploadBegin(silenceBegin) }
         }
-
-        // Prepare first real encoder + GUID for when audio starts
-        createNewEncoder()
 
         isCapturing.store(true, ordering: .releasing)
 
