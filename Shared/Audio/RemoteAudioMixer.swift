@@ -374,9 +374,11 @@ final class RemoteAudioMixer: @unchecked Sendable {
     /// userGains is passed as UnsafeBufferPointer to avoid Array retain/release on the render thread.
     func mixInto(outputBufferList: UnsafeMutablePointer<AudioBufferList>,
                  frameCount: Int,
-                 userGains: UnsafeBufferPointer<Float>) {
+                 userGains: UnsafeBufferPointer<Float>,
+                 intervalLength: Int = 0) {
 
-        let intervalLength = _intervalLength.load(ordering: .acquiring)
+        // Use passed intervalLength if nonzero, else fall back to internal config
+        let intervalLength = intervalLength > 0 ? intervalLength : _intervalLength.load(ordering: .acquiring)
         guard intervalLength > 0 else { return }
 
         mixCallCount.wrappingAdd(1, ordering: .relaxed)

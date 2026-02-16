@@ -22,6 +22,21 @@ enum NINJAMConnectionState: Equatable, Sendable {
     case error(String)
 }
 
+// MARK: - Chat Entry
+
+struct ChatEntry: Identifiable {
+    let id = UUID()
+    let timestamp: Date
+    let type: ChatEntryType
+
+    enum ChatEntryType {
+        case message(from: String, text: String)
+        case join(username: String)
+        case part(username: String)
+        case topic(text: String)
+    }
+}
+
 // MARK: - Client Delegate
 
 /// Delegate protocol for NINJAM client events
@@ -63,6 +78,15 @@ final class NINJAMClient: ObservableObject {
     @Published var bpi: Int = 0
     @Published var currentBeat: Int = 0
     @Published var intervalProgress: Double = 0.0
+
+    // HUD properties
+    @Published var hostBPM: Double = 0.0
+    @Published var serverTopic: String = ""
+    @Published var chatMessages: [ChatEntry] = []
+
+    var isBPMMismatch: Bool {
+        hostBPM > 0 && bpm > 0 && abs(hostBPM - Double(bpm)) > 0.5
+    }
 
     struct ServerInfo {
         let host: String
@@ -605,6 +629,11 @@ final class NINJAMClient: ObservableObject {
         bpi = 0
         currentBeat = 0
         intervalProgress = 0.0
+
+        // Clear HUD state
+        hostBPM = 0
+        serverTopic = ""
+        chatMessages.removeAll()
     }
 
     private func updateIntervalProgress() {
@@ -619,5 +648,12 @@ final class NINJAMClient: ObservableObject {
 
         intervalProgress = progress
         currentBeat = beat
+    }
+
+    // MARK: - Chat / HUD
+
+    func addChatEntry(_ entry: ChatEntry) {
+        chatMessages.append(entry)
+        if chatMessages.count > 50 { chatMessages.removeFirst(chatMessages.count - 50) }
     }
 }

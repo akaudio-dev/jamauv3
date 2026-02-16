@@ -32,9 +32,19 @@ final class DSPKernel: @unchecked Sendable {
 
     /// Remote audio mixer for decoding and playing back other users' audio
     var remoteAudioMixer: RemoteAudioMixer?
-    
+
     var musicalContextBlock: AUHostMusicalContextBlock?
     var midiOutputEventBlock: AUMIDIEventListBlock?
+
+    /// Host tempo (Double.bitPattern), render thread writes, main thread reads via diagnostic timer
+    let hostTempo = Atomic<UInt64>(0)
+    /// Host beat position (Double.bitPattern)
+    let hostBeatPosition = Atomic<UInt64>(0)
+
+    // Tempo sync: interval length correction
+    private var baseIntervalLength: Int = 0
+    private var ninjamBPI: Int = 0
+    let correctedIntervalLength = Atomic<Int>(0)
     
     // MARK: - Initialization
     
@@ -89,8 +99,42 @@ final class DSPKernel: @unchecked Sendable {
         return MIDIProtocolID._2_0
     }
     
+    // MARK: - Tempo Sync
+
+    /// Set interval config for drift correction. Called from main thread.
+    func setIntervalConfig(bpi: Int, intervalLength: Int) {
+        ninjamBPI = bpi
+        baseIntervalLength = intervalLength
+        correctedIntervalLength.store(intervalLength, ordering: .releasing)
+    }
+
+    /// Compute drift between host beat position and NINJAM interval boundary.
+    /// Adjusts correctedIntervalLength by up to ±256 samples.
+    private func computeDriftCorrection(hostBPM: Double, hostBeat: Double) {
+        guard ninjamBPI > 0, baseIntervalLength > 0, hostBPM > 0 else { return }
+
+        // Derive NINJAM's effective BPM from its interval length
+        let ninjamBPM = Double(ninjamBPI) / (Double(baseIntervalLength) / sampleRate) * 60.0
+        // Only correct when host BPM ≈ NINJAM BPM
+        guard abs(hostBPM - ninjamBPM) < 0.5 else {
+            correctedIntervalLength.store(baseIntervalLength, ordering: .relaxed)
+            return
+        }
+
+        // Expected: beat position should be a multiple of BPI at interval boundary
+        let bpi = Double(ninjamBPI)
+        let expectedBeat = (hostBeat / bpi).rounded() * bpi
+        let driftBeats = hostBeat - expectedBeat
+        let samplesPerBeat = 60.0 / hostBPM * sampleRate
+        let driftSamples = Int(driftBeats * samplesPerBeat)
+
+        // Clamp to ±256 samples to avoid transport jump artifacts
+        let correction = max(-256, min(256, -driftSamples))
+        correctedIntervalLength.store(baseIntervalLength + correction, ordering: .relaxed)
+    }
+
     // MARK: - DSP Processing
-    
+
     /// Core signal processing function.
     /// - Parameters:
     ///   - inputBufferList: Input audio buffer list
@@ -102,11 +146,17 @@ final class DSPKernel: @unchecked Sendable {
                  frameCount: AUAudioFrameCount,
                  bufferStartTime: AUEventSampleTime) {
         
-        // Query musical context if available
+        // Read host musical context (RT-safe: stack vars + atomic stores)
+        var tempo: Double = 0
+        var beatPosition: Double = 0
         if let contextBlock = musicalContextBlock {
-            _ = contextBlock(nil, nil, nil, nil, nil, nil)
+            _ = contextBlock(&tempo, nil, nil, &beatPosition, nil, nil)
+            hostTempo.store(tempo.bitPattern, ordering: .relaxed)
+            hostBeatPosition.store(beatPosition.bitPattern, ordering: .relaxed)
         }
-        
+
+        let currentIntervalLength = correctedIntervalLength.load(ordering: .acquiring)
+
         let inputBuffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputBufferList))
         let outputBuffers = UnsafeMutableAudioBufferListPointer(outputBufferList)
 
@@ -126,6 +176,7 @@ final class DSPKernel: @unchecked Sendable {
         }
 
         // Capture raw input for NINJAM upload (before envelope processing)
+        var boundaryHit = false
         if let intervalBuffer = intervalBuffer,
            inputBuffers.count >= 1,
            let inputDataL = inputBuffers[0].mData {
@@ -147,7 +198,14 @@ final class DSPKernel: @unchecked Sendable {
                 inputPeak.store(peakBits, ordering: .relaxed)
             }
 
-            intervalBuffer.captureAudio(inputL: inputL, inputR: inputR, frameCount: Int(frameCount))
+            boundaryHit = intervalBuffer.captureAudio(
+                inputL: inputL, inputR: inputR,
+                frameCount: Int(frameCount), intervalLength: currentIntervalLength)
+        }
+
+        // At interval boundary, compute drift correction for the NEXT interval
+        if boundaryHit, tempo > 0 {
+            computeDriftCorrection(hostBPM: tempo, hostBeat: beatPosition)
         }
 
         // Process each channel
@@ -156,10 +214,10 @@ final class DSPKernel: @unchecked Sendable {
                   let outputData = outputBuffers[channelIndex].mData else {
                 continue
             }
-            
+
             let inputFloats = inputData.assumingMemoryBound(to: Float.self)
             let outputFloats = outputData.assumingMemoryBound(to: Float.self)
-            
+
             // Apply envelope per sample (user gains will be applied when mixing remote streams)
             for frameIndex in 0..<Int(frameCount) {
                 outputFloats[frameIndex] = inputFloats[frameIndex] * noteEnvelope
@@ -171,8 +229,8 @@ final class DSPKernel: @unchecked Sendable {
             remoteAudioMixer?.mixInto(
                 outputBufferList: outputBufferList,
                 frameCount: Int(frameCount),
-                userGains: gainsPtr
-            )
+                userGains: gainsPtr,
+                intervalLength: currentIntervalLength)
         }
     }
     

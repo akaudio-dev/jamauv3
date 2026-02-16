@@ -70,12 +70,35 @@ NINJAMClient delegate           decodeLoop() ~100Hz              DSPKernel.proce
 
 ## Next Steps (Priority Order)
 
-### 1. Integration (High Priority)
+### 1. Host Tempo Sync (High Priority)
+Align NINJAM interval boundaries with the host DAW's transport so beats land on the grid.
+
+**NINJAM timing model:** The protocol has **zero timestamps or beat positions**. The server sends only `BPM` and `BPI` (via `ServerConfigChange`). All timing is local sample counting — both IntervalBuffer (upload) and RemoteAudioMixer (download) count samples against `intervalLengthInSamples` to detect interval boundaries. This is correct and matches the reference implementations (njclient.cpp, JamTaba).
+
+**What the host provides (AUHostMusicalContextBlock):** Since the AU type is `aumf` (Music Effect), `DSPKernel.musicalContextBlock` can query per-render-callback:
+- `currentTempo` (Double) — host BPM
+- `currentBeatPosition` (Double) — fractional beat position (e.g. 4.5 = beat 5, halfway)
+- `timeSignatureNumerator` / `timeSignatureDenominator` (Double)
+- `sampleOffsetToNextBeat` (Double) — samples until next beat boundary
+- `currentMeasureDownbeatPosition` (Double) — beat position of current bar's downbeat
+
+Currently `DSPKernel.process()` calls `contextBlock(nil, nil, nil, nil, nil, nil)` — all values discarded.
+
+**JamTaba's approach:** Optional one-shot alignment at transport start. Uses VST `ppqPos` and `barStartPos` to compute offset to next downbeat, then delays the NINJAM interval start by that many samples. After initial alignment, pure sample counting takes over. No continuous drift correction.
+
+**Implementation plan:**
+1. Read `currentTempo` and `currentBeatPosition` in `DSPKernel.process()`
+2. At NINJAM connect time, if host transport is running, compute offset from current beat position to next interval-aligned downbeat
+3. Delay the first interval start by that offset (insert silence/padding)
+4. After initial sync, rely on sample counting (NINJAM BPM should match host BPM)
+5. Optional: warn user if host BPM ≠ NINJAM server BPM (drift will accumulate)
+
+### 2. Integration (Medium Priority)
 - Wire up per-user gain controls (already in UI, RemoteAudioMixer maps users to gain slots 0-7)
 - Implement metronome
 - Accept host's audio format dynamically (currently defaults to 44100 Hz)
 
-### 2. Polish (Medium Priority)
+### 3. Polish (Lower Priority)
 - Chat UI (protocol support exists)
 - Settings (audio quality, latency compensation)
 - Error handling improvements
@@ -89,6 +112,8 @@ NINJAMClient delegate           decodeLoop() ~100Hz              DSPKernel.proce
 - **IntervalConfig:** `IntervalConfig(bpm:bpi:sampleRate:)` → `intervalLengthInSamples` (e.g. 120 BPM, 16 BPI, 44100 Hz = 352800 samples)
 - **AU type:** `aumf` (Music Effect) — receives audio + MIDI, enables tempo/transport sync
 - **Render block:** Pulls input directly into the output buffer for in-place processing (`pullBlock(..., outputData)`). Do NOT use a separate BufferedInputBus for audio — hosts (e.g. Ableton) return `mDataByteSize=0` when pulling into a separate buffer. `channelCapabilities = [-1, -1]` (any matching N-in/N-out). `canProcessInPlace = true`
+- **Musical context:** `DSPKernel.musicalContextBlock` (AUHostMusicalContextBlock) provides host tempo, beat position, time signature per render callback. Currently queries but discards all values — needs implementation for tempo sync
+- **NINJAM timing:** No server-side timestamps or beat positions. All timing is pure local sample counting against `intervalLengthInSamples`. Matches njclient.cpp and JamTaba reference implementations
 - **IntervalBuffer:** 3-thread model (render → SPSC CircularBuffer → encoding thread → @MainActor callbacks). Start/stop managed by AudioUnitViewController via NINJAMClientDelegate
 - **RemoteAudioMixer:** 3-thread model (@MainActor accumulates OGG fragments → decode thread decodes to PCM → render thread mixes). Double-buffered: decode writes nextBuffer, render swaps at interval boundary. Uses PlaybackBuffer (flat linear buffer) not CircularBuffer. Lives in Shared/Audio/ (compiled into both host + extension)
 - **Download messages:** `ServerDownloadIntervalBegin` (0x04, GUID, username, channelIndex, fourCC) + `ServerDownloadIntervalWrite` (0x05, GUID, flags, audioData). Delegate passes fourCC so mixer can skip silence intervals

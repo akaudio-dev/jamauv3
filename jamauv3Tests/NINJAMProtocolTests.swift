@@ -469,8 +469,8 @@ struct DownloadIntervalTests {
         data.append(contentsOf: (0..<16).map { UInt8($0) })
         // Est size: 1000 = 0x3E8
         data.append(contentsOf: [0xE8, 0x03, 0x00, 0x00])
-        // FourCC: 'OGGv' = 0x7667674F
-        data.append(contentsOf: [0x4F, 0x67, 0x67, 0x76])
+        // FourCC: MAKE_NJ_FOURCC('O','G','G','v') = 0x7647474F
+        data.append(contentsOf: [0x4F, 0x47, 0x47, 0x76])
         // Channel index
         data.append(0)
         // Username

@@ -138,6 +138,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         }
 
         auUnit.kernel.intervalBuffer = buffer
+        auUnit.kernel.setIntervalConfig(bpi: bpi, intervalLength: config.intervalLengthInSamples)
         self.intervalBuffer = buffer
         buffer.start()
 
@@ -165,6 +166,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         let config = IntervalConfig(bpm: ninjamClient.bpm, bpi: ninjamClient.bpi, sampleRate: sampleRate)
         intervalBuffer?.updateConfig(config)
         remoteAudioMixer?.updateConfig(config)
+        auUnit.kernel.setIntervalConfig(bpi: ninjamClient.bpi, intervalLength: config.intervalLengthInSamples)
     }
 
     // MARK: - Remote Audio Mixer Wiring
@@ -200,14 +202,24 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
                 // Read and reset peaks from DSPKernel
                 var inputPeakStr = "n/a"
                 var outputPeakStr = "n/a"
+                var hostTempoVal: Double = 0
+                var correctedLen = 0
                 if let kernel = (self?.audioUnit as? jamauv3ExtensionAudioUnit)?.kernel {
                     let inBits = kernel.inputPeak.exchange(0, ordering: .relaxed)
                     inputPeakStr = String(format: "%.6f", Float(bitPattern: inBits))
                     let outBits = kernel.outputPeak.exchange(0, ordering: .relaxed)
                     outputPeakStr = String(format: "%.6f", Float(bitPattern: outBits))
+
+                    // Read host tempo from kernel and update HUD
+                    let tempoBits = kernel.hostTempo.load(ordering: .relaxed)
+                    hostTempoVal = Double(bitPattern: tempoBits)
+                    if hostTempoVal > 0 {
+                        self?.ninjamClient.hostBPM = hostTempoVal
+                    }
+                    correctedLen = kernel.correctedIntervalLength.load(ordering: .relaxed)
                 }
 
-                log.info("Mixer stats: decodes=\(decodes) swaps=\(swaps) mixed=\(mixed) mixCalls=\(mixCalls) inPeak=\(inputPeakStr, privacy: .public) outPeak=\(outputPeakStr, privacy: .public)")
+                log.info("Mixer stats: decodes=\(decodes) swaps=\(swaps) mixed=\(mixed) mixCalls=\(mixCalls) inPeak=\(inputPeakStr, privacy: .public) outPeak=\(outputPeakStr, privacy: .public) hostBPM=\(String(format: "%.1f", hostTempoVal), privacy: .public) correctedInterval=\(correctedLen)")
             }
         }
     }
@@ -285,6 +297,18 @@ extension AudioUnitViewController: NINJAMClientDelegate {
     }
 
     func client(_ client: NINJAMClient, didReceiveChatMessage message: ServerChatMessage) {
-        // Will be used for chat UI in a future step
+        switch message.messageType {
+        case .message(let from, let text):
+            client.addChatEntry(ChatEntry(timestamp: Date(), type: .message(from: from, text: text)))
+        case .topicChange(let topic):
+            client.serverTopic = topic
+            client.addChatEntry(ChatEntry(timestamp: Date(), type: .topic(text: topic)))
+        case .join(let username):
+            client.addChatEntry(ChatEntry(timestamp: Date(), type: .join(username: username)))
+        case .part(let username):
+            client.addChatEntry(ChatEntry(timestamp: Date(), type: .part(username: username)))
+        default:
+            break
+        }
     }
 }

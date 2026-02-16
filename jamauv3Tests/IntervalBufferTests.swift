@@ -59,7 +59,7 @@ struct UploadIntervalBeginTests {
         let fourCC = data.withUnsafeBytes { ptr in
             ptr.loadUnaligned(fromByteOffset: 20, as: UInt32.self)
         }
-        #expect(fourCC == 0x7667674F)
+        #expect(fourCC == 0x7647474F)  // MAKE_NJ_FOURCC('O','G','G','v')
     }
 
     @Test("Silence has all-zero GUID and fourCC=0")

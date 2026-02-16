@@ -149,11 +149,16 @@ final class IntervalBuffer: @unchecked Sendable {
     ///   - inputL: Left channel samples
     ///   - inputR: Right channel samples (nil for mono input)
     ///   - frameCount: Number of frames
-    func captureAudio(inputL: UnsafePointer<Float>, inputR: UnsafePointer<Float>?, frameCount: Int) {
-        guard isCapturing.load(ordering: .acquiring) else { return }
+    ///   - intervalLength: Corrected interval length in samples (from DSPKernel drift correction)
+    /// - Returns: `true` when an interval boundary was reached
+    @discardableResult
+    func captureAudio(inputL: UnsafePointer<Float>, inputR: UnsafePointer<Float>?,
+                      frameCount: Int, intervalLength: Int = 0) -> Bool {
+        guard isCapturing.load(ordering: .acquiring) else { return false }
 
-        let intervalLength = _intervalLength.load(ordering: .acquiring)
-        guard intervalLength > 0 else { return }
+        // Use passed intervalLength if nonzero, else fall back to internal config
+        let effectiveLength = intervalLength > 0 ? intervalLength : _intervalLength.load(ordering: .acquiring)
+        guard effectiveLength > 0 else { return false }
 
         // Mix stereo to mono using stack allocation (RT-safe)
         withUnsafeTemporaryAllocation(of: Float.self, capacity: frameCount) { monoBuffer in
@@ -173,11 +178,14 @@ final class IntervalBuffer: @unchecked Sendable {
         // Count samples and detect interval boundary
         var pos = samplePosition.load(ordering: .acquiring)
         pos += frameCount
-        if pos >= intervalLength {
-            pos = pos % intervalLength
+        var hitBoundary = false
+        if pos >= effectiveLength {
+            pos = pos % effectiveLength
             intervalBoundaryReached.store(true, ordering: .releasing)
+            hitBoundary = true
         }
         samplePosition.store(pos, ordering: .releasing)
+        return hitBoundary
     }
 
     // MARK: - Encoding Thread

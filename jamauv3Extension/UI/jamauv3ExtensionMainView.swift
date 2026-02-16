@@ -96,6 +96,48 @@ struct jamauv3ExtensionMainView: View {
                         .tint(.green)
                 }
                 .padding(.horizontal)
+
+                // HUD section
+                VStack(alignment: .leading, spacing: 4) {
+                    // Server topic
+                    if !ninjamClient.serverTopic.isEmpty {
+                        Text(ninjamClient.serverTopic)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(2)
+                    }
+
+                    // Host BPM + mismatch warning
+                    if ninjamClient.hostBPM > 0 {
+                        HStack(spacing: 4) {
+                            Text("Host: \(ninjamClient.hostBPM, specifier: "%.1f") BPM")
+                                .font(.caption.monospacedDigit())
+                                .foregroundColor(.secondary)
+                            if ninjamClient.isBPMMismatch {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                                Text("BPM mismatch")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                            }
+                        }
+                    }
+
+                    // Chat messages
+                    if !ninjamClient.chatMessages.isEmpty {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(ninjamClient.chatMessages) { entry in
+                                    chatEntryView(entry)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 100)
+                    }
+                }
+                .padding(.horizontal)
             }
 
             Divider()
@@ -120,6 +162,23 @@ struct jamauv3ExtensionMainView: View {
         .frame(minWidth: 300, minHeight: 400)
     }
     
+    @ViewBuilder
+    private func chatEntryView(_ entry: ChatEntry) -> some View {
+        switch entry.type {
+        case .message(let from, let text):
+            HStack(spacing: 0) {
+                Text("\(from): ").font(.caption).bold()
+                Text(text).font(.caption)
+            }
+        case .join(let username):
+            Text("\(username) joined").font(.caption).foregroundColor(.green)
+        case .part(let username):
+            Text("\(username) left").font(.caption).foregroundColor(.red)
+        case .topic(let text):
+            Text("Topic: \(text)").font(.caption).italic()
+        }
+    }
+
     private func handleConnectionToggle() {
         if ninjamClient.isConnected {
             // Disconnect
