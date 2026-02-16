@@ -43,10 +43,12 @@ private struct DecodeJob {
 final class PlaybackBuffer: @unchecked Sendable {
     private let samples: UnsafeMutablePointer<Float>
     let count: Int
+    let channels: Int
     private var readPosition: Int = 0
 
-    init(samples: [Float]) {
+    init(samples: [Float], channels: Int = 1) {
         self.count = samples.count
+        self.channels = channels
         self.samples = .allocate(capacity: samples.count)
         samples.withUnsafeBufferPointer { ptr in
             guard let base = ptr.baseAddress else { return }
@@ -104,6 +106,10 @@ final class RemoteAudioMixer: @unchecked Sendable {
 
     /// Active downloads keyed by GUID. Only accessed on @MainActor.
     private var activeDownloads: [Data: DownloadState] = [:]
+
+    /// Reverse mapping: ChannelKey → current GUID. Used to evict stale downloads
+    /// when a new interval begins for the same channel (previous isEnd was missed).
+    private var channelCurrentGUID: [ChannelKey: Data] = [:]
 
     /// Playback states keyed by ChannelKey. Only accessed on main thread.
     /// Render thread receives snapshots via staged handoff (stagedRenderChannels).
@@ -181,6 +187,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
         decodeThread = nil
 
         activeDownloads.removeAll()
+        channelCurrentGUID.removeAll()
         queueLock.sync { decodeQueue.removeAll() }
 
         if let buf = tempBuffer {
@@ -213,6 +220,15 @@ final class RemoteAudioMixer: @unchecked Sendable {
         }
 
         let key = ChannelKey(username: username, channelIndex: channelIndex)
+
+        // Evict stale download for this channel if the previous interval's isEnd was missed
+        if let oldGUID = channelCurrentGUID[key] {
+            if activeDownloads.removeValue(forKey: oldGUID) != nil {
+                logger.warning("Evicted stale download for \(username, privacy: .public)/\(channelIndex)")
+            }
+        }
+        channelCurrentGUID[key] = guid
+
         activeDownloads[guid] = DownloadState(channelKey: key, data: Data())
 
         // Ensure playback state exists for this channel
@@ -236,6 +252,10 @@ final class RemoteAudioMixer: @unchecked Sendable {
 
         if isEnd {
             activeDownloads.removeValue(forKey: guid)
+            // Clear reverse mapping since download completed normally
+            if channelCurrentGUID[download.channelKey] == guid {
+                channelCurrentGUID.removeValue(forKey: download.channelKey)
+            }
             let oggData = download.data
             let channelKey = download.channelKey
 
@@ -323,19 +343,30 @@ final class RemoteAudioMixer: @unchecked Sendable {
         do {
             let decoded = try OggVorbisDecoder.decode(data: job.oggData)
             let deinterleaved = decoded.deinterleavedSamples()
-            guard let monoChannel = deinterleaved.first, !monoChannel.isEmpty else { return }
+            guard let ch0 = deinterleaved.first, !ch0.isEmpty else { return }
 
             let localSampleRate = _sampleRate.load(ordering: .acquiring)
+            let needsResample = decoded.format.sampleRate != localSampleRate && localSampleRate > 0 && decoded.format.sampleRate > 0
 
-            // Resample if needed
-            let samples: [Float]
-            if decoded.format.sampleRate != localSampleRate && localSampleRate > 0 && decoded.format.sampleRate > 0 {
-                samples = linearResample(monoChannel, fromRate: decoded.format.sampleRate, toRate: localSampleRate)
+            let buffer: PlaybackBuffer
+            if decoded.format.channels >= 2 {
+                // Stereo source — resample each channel, interleave
+                let left = needsResample ? linearResample(ch0, fromRate: decoded.format.sampleRate, toRate: localSampleRate) : ch0
+                let ch1 = deinterleaved[1]
+                let right = needsResample ? linearResample(ch1, fromRate: decoded.format.sampleRate, toRate: localSampleRate) : ch1
+                let frameCount = min(left.count, right.count)
+                var interleaved = [Float](repeating: 0, count: frameCount * 2)
+                for i in 0..<frameCount {
+                    interleaved[i * 2] = left[i]
+                    interleaved[i * 2 + 1] = right[i]
+                }
+                buffer = PlaybackBuffer(samples: interleaved, channels: 2)
             } else {
-                samples = monoChannel
+                // Mono source
+                let samples = needsResample ? linearResample(ch0, fromRate: decoded.format.sampleRate, toRate: localSampleRate) : ch0
+                buffer = PlaybackBuffer(samples: samples, channels: 1)
             }
 
-            let buffer = PlaybackBuffer(samples: samples)
             job.playbackState.nextBuffer = buffer
             job.playbackState.nextReady.store(true, ordering: .releasing)
 
@@ -383,8 +414,8 @@ final class RemoteAudioMixer: @unchecked Sendable {
 
         mixCallCount.wrappingAdd(1, ordering: .relaxed)
 
-        // Ensure temp buffer is large enough
-        ensureTempBuffer(frameCount: frameCount)
+        // Ensure temp buffer is large enough (stereo needs 2× samples)
+        ensureTempBuffer(frameCount: frameCount * 2)
         guard let temp = tempBuffer else { return }
 
         // Pick up staged channel snapshot from main thread if available
@@ -432,16 +463,26 @@ final class RemoteAudioMixer: @unchecked Sendable {
             let gain = userGains[slot]
             guard gain > 0.001 else { continue }
 
-            let samplesRead = buffer.read(into: temp, count: frameCount)
+            let ch = buffer.channels
+            let samplesRead = buffer.read(into: temp, count: frameCount * ch)
             guard samplesRead > 0 else { continue }
+            let framesRead = samplesRead / ch
 
-            samplesMixedCount.wrappingAdd(samplesRead, ordering: .relaxed)
+            samplesMixedCount.wrappingAdd(framesRead, ordering: .relaxed)
 
-            // Additive mix: mono → stereo (equal L+R)
-            for i in 0..<samplesRead {
-                let sample = temp[i] * gain
-                outL[i] += sample
-                outputR?[i] += sample
+            if ch >= 2 {
+                // Stereo: deinterleave and mix L→L, R→R
+                for i in 0..<framesRead {
+                    outL[i] += temp[i * 2] * gain
+                    outputR?[i] += temp[i * 2 + 1] * gain
+                }
+            } else {
+                // Mono: duplicate to both channels
+                for i in 0..<framesRead {
+                    let sample = temp[i] * gain
+                    outL[i] += sample
+                    outputR?[i] += sample
+                }
             }
         }
     }

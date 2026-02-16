@@ -13,155 +13,218 @@ struct jamauv3ExtensionMainView: View {
     @ObservedObject var connectionSettings: ConnectionSettings
     @ObservedObject var ninjamClient: NINJAMClient
 
+    @State private var showingConnectionSheet = false
+    @State private var chatInput = ""
+
     var body: some View {
-        VStack(spacing: 16) {
-            // Connection settings section
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Connection Settings")
-                    .font(.headline)
-                
-                // Server and Port
-                HStack(spacing: 8) {
-                    TextField("Server", text: $connectionSettings.serverName)
-                        .textFieldStyle(.roundedBorder)
-                        .disabled(ninjamClient.isConnected)
-                    
-                    TextField("Port", text: $connectionSettings.port)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 80)
-                        .disabled(ninjamClient.isConnected)
-                }
-                
-                // Username
-                TextField("Username", text: $connectionSettings.username)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(ninjamClient.isConnected)
-                
-                // Password
-                SecureField("Password", text: $connectionSettings.password)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(ninjamClient.isConnected)
-                
-                // Connect/Disconnect button
-                Button(action: handleConnectionToggle) {
-                    HStack {
-                        Image(systemName: ninjamClient.isConnected ? "network.slash" : "network")
-                        Text(ninjamClient.isConnected ? "Disconnect" : "Connect")
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(ninjamClient.isConnected ? .red : .blue)
-                
-                // Connection status
-                HStack {
-                    Circle()
-                        .fill(ninjamClient.isConnected ? Color.green : Color.gray)
-                        .frame(width: 8, height: 8)
-                    
+        VStack(spacing: 0) {
+            // Connection status bar
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(ninjamClient.isConnected ? Color.green : Color.gray)
+                    .frame(width: 8, height: 8)
+
+                if ninjamClient.isConnected {
+                    Text("\(connectionSettings.serverName):\(connectionSettings.port)")
+                        .font(.caption)
+                    Text("(\(connectionSettings.username))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
                     Text(ninjamClient.connectionStatus)
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    
-                    Spacer()
                 }
-                
-                // Error message if any
-                if let error = ninjamClient.lastError {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundColor(.red)
-                        .padding(.vertical, 4)
+
+                Spacer()
+
+                // Host BPM (inline when connected)
+                if ninjamClient.isConnected && ninjamClient.hostBPM > 0 {
+                    Text("Host \(ninjamClient.hostBPM, specifier: "%.0f")")
+                        .font(.caption.monospacedDigit())
+                        .foregroundColor(.secondary)
+                    if ninjamClient.isBPMMismatch {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
+                }
+
+                if ninjamClient.isConnected {
+                    Button(action: { ninjamClient.disconnect() }) {
+                        Image(systemName: "network.slash")
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+                    .buttonStyle(.borderless)
+                } else {
+                    Button(action: { showingConnectionSheet = true }) {
+                        Image(systemName: "network.badge.shield.half.filled")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
                 }
             }
-            .padding()
-            
-            // Interval timing section (visible when connected)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .sheet(isPresented: $showingConnectionSheet) {
+                connectionSheet
+            }
+
+            // Interval timing (compact)
             if ninjamClient.isConnected && ninjamClient.bpm > 0 {
-                Divider()
+                HStack(spacing: 6) {
+                    Text("\(ninjamClient.bpm)/\(ninjamClient.bpi)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundColor(.secondary)
 
-                VStack(spacing: 8) {
-                    // BPM / BPI display
-                    HStack {
-                        Text("\(ninjamClient.bpm) BPM, \(ninjamClient.bpi) BPI")
-                            .font(.subheadline.monospacedDigit())
-                        Spacer()
-                        Text("\(ninjamClient.currentBeat + 1)/\(ninjamClient.bpi)")
-                            .font(.subheadline.monospacedDigit().bold())
-                    }
-
-                    // Interval progress bar
                     ProgressView(value: ninjamClient.intervalProgress)
                         .tint(.green)
+
+                    Text("\(ninjamClient.currentBeat + 1)/\(ninjamClient.bpi)")
+                        .font(.caption.monospacedDigit().bold())
                 }
-                .padding(.horizontal)
-
-                // HUD section
-                VStack(alignment: .leading, spacing: 4) {
-                    // Server topic
-                    if !ninjamClient.serverTopic.isEmpty {
-                        Text(ninjamClient.serverTopic)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .lineLimit(2)
-                    }
-
-                    // Host BPM + mismatch warning
-                    if ninjamClient.hostBPM > 0 {
-                        HStack(spacing: 4) {
-                            Text("Host: \(ninjamClient.hostBPM, specifier: "%.1f") BPM")
-                                .font(.caption.monospacedDigit())
-                                .foregroundColor(.secondary)
-                            if ninjamClient.isBPMMismatch {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                                    .font(.caption)
-                                    .foregroundColor(.orange)
-                                Text("BPM mismatch")
-                                    .font(.caption)
-                                    .foregroundColor(.orange)
-                            }
-                        }
-                    }
-
-                    // Chat messages
-                    if !ninjamClient.chatMessages.isEmpty {
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 2) {
-                                ForEach(ninjamClient.chatMessages) { entry in
-                                    chatEntryView(entry)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .frame(maxHeight: 100)
-                    }
-                }
-                .padding(.horizontal)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 4)
             }
 
             Divider()
 
-            // User gains mixer section
-            VStack(alignment: .leading, spacing: 8) {
-                Text("User Gains")
-                    .font(.headline)
+            // Chat terminal (fills available space)
+            chatTerminal
 
-                HStack(spacing: 8) {
-                    let usersGroup: ObservableAUParameterGroup = parameterTree.users
-                    ForEach(0..<usersGroup.parameters.count, id: \.self) { index in
-                        VerticalGainSlider(param: usersGroup.parameters[index])
-                    }
+            Divider()
+
+            // User gains (fixed height at bottom)
+            HStack(spacing: 0) {
+                let usersGroup: ObservableAUParameterGroup = parameterTree.users
+                ForEach(0..<usersGroup.parameters.count, id: \.self) { index in
+                    VerticalGainSlider(param: usersGroup.parameters[index])
                 }
-                .frame(maxWidth: .infinity)
             }
-            .padding()
-            
-            Spacer()
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 4)
         }
         .frame(minWidth: 300, minHeight: 400)
     }
-    
+
+    // MARK: - Chat Terminal
+
+    private var chatTerminal: some View {
+        VStack(spacing: 0) {
+            // Server topic bar
+            if ninjamClient.isConnected && !ninjamClient.serverTopic.isEmpty {
+                Text(ninjamClient.serverTopic)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 3)
+                    .background(Color.primary.opacity(0.04))
+            }
+
+            // Messages scroll area
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        ForEach(ninjamClient.chatMessages) { entry in
+                            chatEntryView(entry)
+                                .id(entry.id)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                }
+                .onChange(of: ninjamClient.chatMessages.count) { _ in
+                    if let last = ninjamClient.chatMessages.last {
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
+                    }
+                }
+            }
+
+            // Input field
+            if ninjamClient.isConnected {
+                HStack(spacing: 6) {
+                    TextField("Message...", text: $chatInput)
+                        .textFieldStyle(.plain)
+                        .font(.caption)
+                        .onSubmit { sendMessage() }
+
+                    Button(action: sendMessage) {
+                        Image(systemName: "paperplane.fill")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(chatInput.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.primary.opacity(0.04))
+            }
+        }
+    }
+
+    // MARK: - Connection Sheet
+
+    private var connectionSheet: some View {
+        VStack(spacing: 16) {
+            Text("Connect to Server")
+                .font(.headline)
+                .padding(.top)
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    TextField("Server", text: $connectionSettings.serverName)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Port", text: $connectionSettings.port)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 80)
+                }
+
+                TextField("Username", text: $connectionSettings.username)
+                    .textFieldStyle(.roundedBorder)
+
+                SecureField("Password", text: $connectionSettings.password)
+                    .textFieldStyle(.roundedBorder)
+
+                Toggle("Stereo", isOn: $connectionSettings.stereo)
+            }
+
+            if let error = ninjamClient.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundColor(.red)
+            }
+
+            HStack(spacing: 12) {
+                Button("Cancel") {
+                    showingConnectionSheet = false
+                }
+                .buttonStyle(.bordered)
+
+                Button(action: handleConnectionToggle) {
+                    HStack {
+                        Image(systemName: "network")
+                        Text("Connect")
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(.bottom)
+        }
+        .padding(.horizontal)
+        .frame(minWidth: 320)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    // MARK: - Helpers
+
     @ViewBuilder
     private func chatEntryView(_ entry: ChatEntry) -> some View {
         switch entry.type {
@@ -171,41 +234,39 @@ struct jamauv3ExtensionMainView: View {
                 Text(text).font(.caption)
             }
         case .join(let username):
-            Text("\(username) joined").font(.caption).foregroundColor(.green)
+            Text("* \(username) joined").font(.caption).foregroundColor(.green)
         case .part(let username):
-            Text("\(username) left").font(.caption).foregroundColor(.red)
+            Text("* \(username) left").font(.caption).foregroundColor(.red)
         case .topic(let text):
-            Text("Topic: \(text)").font(.caption).italic()
+            Text("Topic: \(text)").font(.caption).italic().foregroundColor(.secondary)
         }
+    }
+
+    private func sendMessage() {
+        let text = chatInput.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { return }
+        ninjamClient.sendChat(text)
+        chatInput = ""
     }
 
     private func handleConnectionToggle() {
         if ninjamClient.isConnected {
-            // Disconnect
             ninjamClient.disconnect()
         } else {
-            // Validate inputs
-            guard !connectionSettings.serverName.isEmpty else {
-                return
-            }
+            guard !connectionSettings.serverName.isEmpty else { return }
             guard !connectionSettings.port.isEmpty,
-                  let portNumber = UInt16(connectionSettings.port) else {
-                return
-            }
-            guard !connectionSettings.username.isEmpty else {
-                return
-            }
+                  let portNumber = UInt16(connectionSettings.port) else { return }
+            guard !connectionSettings.username.isEmpty else { return }
 
-            // Save settings when connecting
             connectionSettings.save()
 
-            // Connect to NINJAM server
             ninjamClient.connect(
                 host: connectionSettings.serverName,
                 port: portNumber,
                 username: connectionSettings.username,
                 password: connectionSettings.password
             )
+            showingConnectionSheet = false
         }
     }
 }

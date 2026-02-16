@@ -61,8 +61,6 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
     public override func viewDidLoad() {
         super.viewDidLoad()
 
-        ninjamClient.delegate = self
-
         // Accessing the `audioUnit` parameter prompts the AU to be created via createAudioUnit(with:)
         guard let audioUnit = self.audioUnit else {
             return
@@ -84,7 +82,9 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
 				// Configure the SwiftUI view after creating the AU, instead of in viewDidLoad,
 				// so that the parameter tree is set up before we build our @AUParameterUI properties
 				DispatchQueue.main.async {
+					self.ninjamClient.delegate = self
 					self.configureSwiftUIView(audioUnit: audioUnit)
+					self.attemptAutoConnect()
 				}
 			}
 			
@@ -124,7 +124,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         log.info("startIntervalCapture: sampleRate=\(sampleRate) bpm=\(bpm) bpi=\(bpi)")
 
         let config = IntervalConfig(bpm: bpm, bpi: bpi, sampleRate: sampleRate)
-        let buffer = IntervalBuffer(config: config)
+        let buffer = IntervalBuffer(config: config, stereo: connectionSettings.stereo)
 
         buffer.onUploadBegin = { [weak self] msg in
             self?.ninjamClient.sendUploadBegin(msg)
@@ -253,6 +253,21 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         host.view.trailingAnchor.constraint(equalTo: self.view.trailingAnchor).isActive = true
         host.view.bottomAnchor.constraint(equalTo: self.view.bottomAnchor).isActive = true
         self.view.bringSubviewToFront(host.view)
+    }
+
+    private func attemptAutoConnect() {
+        guard !ninjamClient.isConnected,
+              !connectionSettings.serverName.isEmpty,
+              !connectionSettings.username.isEmpty,
+              let port = UInt16(connectionSettings.port) else { return }
+
+        log.info("Auto-reconnecting to \(self.connectionSettings.serverName, privacy: .public):\(port)")
+        ninjamClient.connect(
+            host: connectionSettings.serverName,
+            port: port,
+            username: connectionSettings.username,
+            password: connectionSettings.password
+        )
     }
 
 }

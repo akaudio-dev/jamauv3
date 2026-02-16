@@ -18,6 +18,7 @@ class ConnectionSettings: ObservableObject {
         static let port = "jamauv3.connection.port"
         static let username = "jamauv3.connection.username"
         static let password = "jamauv3.connection.password"
+        static let stereo = "jamauv3.connection.stereo"
     }
     
     @Published var serverName: String {
@@ -43,13 +44,20 @@ class ConnectionSettings: ObservableObject {
             defaults.set(password, forKey: Keys.password)
         }
     }
-    
+
+    @Published var stereo: Bool {
+        didSet {
+            defaults.set(stereo, forKey: Keys.stereo)
+        }
+    }
+
     init() {
         // Load saved values or use defaults
         self.serverName = defaults.string(forKey: Keys.serverName) ?? ""
         self.port = defaults.string(forKey: Keys.port) ?? ""
         self.username = defaults.string(forKey: Keys.username) ?? ""
         self.password = defaults.string(forKey: Keys.password) ?? ""
+        self.stereo = defaults.bool(forKey: Keys.stereo)
     }
     
     /// Save all settings explicitly (called when Connect is pressed)
@@ -58,20 +66,23 @@ class ConnectionSettings: ObservableObject {
         defaults.set(port, forKey: Keys.port)
         defaults.set(username, forKey: Keys.username)
         defaults.set(password, forKey: Keys.password)
+        defaults.set(stereo, forKey: Keys.stereo)
         defaults.synchronize()
     }
-    
+
     /// Clear all saved settings
     func clear() {
         defaults.removeObject(forKey: Keys.serverName)
         defaults.removeObject(forKey: Keys.port)
         defaults.removeObject(forKey: Keys.username)
         defaults.removeObject(forKey: Keys.password)
+        defaults.removeObject(forKey: Keys.stereo)
         defaults.synchronize()
-        
+
         serverName = ""
         port = ""
         username = ""
         password = ""
+        stereo = false
     }
 }

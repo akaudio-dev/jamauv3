@@ -16,8 +16,8 @@ let jamauv3ExtensionParameterSpecs = ParameterTreeSpec {
                 identifier: "userGain\(i)",
                 name: "User \(i + 1)",
                 units: .linearGain,
-                valueRange: 0.0...1.0,
-                defaultValue: 0.75
+                valueRange: 0.0...2.0,
+                defaultValue: 1.0
             )
         }
     }

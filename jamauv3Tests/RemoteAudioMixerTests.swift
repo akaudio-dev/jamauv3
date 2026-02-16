@@ -408,5 +408,85 @@ struct RemoteAudioMixerMemoryTests {
         #expect(result.midToEnd < 3 * 1024 * 1024,
                 "Phase 2 grew by \(result.midToEnd / 1024) KB — possible decode leak")
     }
+
+    @Test("Sustained session: many intervals with dropped downloads don't leak")
+    func sustainedSessionDoesNotLeak() throws {
+        // Pre-generate OGG data once (avoids encoder allocation noise in measurement)
+        let oggData = try generateOGGData(frequency: 440, duration: 0.3)
+        let usernames = ["alice", "bob", "charlie"]
+        let frameCount = 512
+        let gains: [Float] = Array(repeating: 1.0, count: 8)
+
+        /// Simulate one interval: begin + receive + mix through boundary
+        func runInterval(mixer: RemoteAudioMixer, intervalIndex: Int, config: IntervalConfig) {
+            var outputL = [Float](repeating: 0, count: frameCount)
+            var outputR = [Float](repeating: 0, count: frameCount)
+
+            // Each user sends audio this interval
+            for (ui, username) in usernames.enumerated() {
+                let guid = {
+                    var g = Data(count: 16)
+                    g[0] = UInt8(intervalIndex & 0xFF)
+                    g[1] = UInt8(ui)
+                    return g
+                }()
+
+                mixer.beginDownload(guid: guid, username: username, channelIndex: 0,
+                                   fourCC: ClientUploadIntervalBegin.oggVorbisFourCC)
+
+                // ~10% of intervals: simulate dropped isEnd (the leak scenario)
+                if intervalIndex % 10 == ui {
+                    // Send some data but never isEnd — stale download
+                    mixer.receiveData(guid: guid, data: oggData.prefix(100), isEnd: false)
+                } else {
+                    // Normal complete download
+                    mixer.receiveData(guid: guid, data: oggData, isEnd: true)
+                }
+            }
+
+            // Let decode thread process
+            Thread.sleep(forTimeInterval: 0.05)
+
+            // Simulate render thread: advance through one full interval
+            let callsNeeded = (config.intervalLengthInSamples / frameCount) + 2
+            for _ in 0..<callsNeeded {
+                outputL.withUnsafeMutableBufferPointer { lBuf in
+                    outputR.withUnsafeMutableBufferPointer { rBuf in
+                        withUnsafeMutableAudioBufferList(lBuf: lBuf, rBuf: rBuf) { abl in
+                            gains.withUnsafeBufferPointer { gainsPtr in
+                                mixer.mixInto(outputBufferList: abl, frameCount: frameCount, userGains: gainsPtr)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mixer = RemoteAudioMixer()
+        let config = IntervalConfig(bpm: 200, bpi: 1, sampleRate: 44100) // ~0.3s intervals
+        mixer.start(config: config)
+        defer { mixer.stop() }
+
+        mixer.updateUserInfo(channels: usernames.map { makeChannelInfo(username: $0) })
+
+        // Warmup phase
+        for i in 0..<20 {
+            runInterval(mixer: mixer, intervalIndex: i, config: config)
+        }
+        let memAfterWarmup = residentMemoryBytes()
+
+        // Sustained phase: 200 intervals (~60 seconds of simulated session at 200 BPM/1 BPI)
+        for i in 20..<220 {
+            runInterval(mixer: mixer, intervalIndex: i, config: config)
+        }
+        let memAfterSustained = residentMemoryBytes()
+
+        let growth = memAfterSustained - memAfterWarmup
+        // With the leak fix, stale downloads are evicted each interval, so growth should be minimal.
+        // Without the fix, 200 intervals × 3 users × ~10% drop rate × ~100 bytes = small but
+        // the real issue is accumulated OGG Data objects (~50KB each) that never get freed.
+        #expect(growth < 5 * 1024 * 1024,
+                "Sustained session grew by \(growth / 1024) KB over 200 intervals — possible leak")
+    }
 }
 

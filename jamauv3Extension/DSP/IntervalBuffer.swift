@@ -35,6 +35,7 @@ final class IntervalBuffer: @unchecked Sendable {
 
     private let channelIndex: UInt8
     private let encoderQuality: Float
+    private let stereo: Bool
 
     // Atomic interval length — updated from main thread, read from render thread
     private let _intervalLength = Atomic<Int>(0)
@@ -70,13 +71,17 @@ final class IntervalBuffer: @unchecked Sendable {
     ///   - config: Initial interval configuration (BPM, BPI, sample rate)
     ///   - channelIndex: Local channel index for upload messages
     ///   - quality: Vorbis VBR quality (-0.1 to 1.0), default 0.1 ≈ 75 kbps
-    init(config: IntervalConfig, channelIndex: UInt8 = 0, quality: Float = 0.1) {
+    ///   - stereo: If true, capture interleaved stereo; if false, mix down to mono
+    init(config: IntervalConfig, channelIndex: UInt8 = 0, quality: Float = 0.1, stereo: Bool = false) {
         self.channelIndex = channelIndex
         self.encoderQuality = quality
+        self.stereo = stereo
 
         // Size buffer for 2× interval length to avoid overflow
+        // Stereo needs 2× the samples (interleaved L/R)
         let intervalSamples = max(config.intervalLengthInSamples, 44100)
-        self.captureBuffer = CircularBuffer(capacity: intervalSamples * 2 + 1)
+        let channelMultiplier = stereo ? 2 : 1
+        self.captureBuffer = CircularBuffer(capacity: intervalSamples * 2 * channelMultiplier + 1)
 
         _intervalLength.store(config.intervalLengthInSamples, ordering: .releasing)
         _sampleRate.store(Int(config.sampleRate), ordering: .releasing)
@@ -142,8 +147,10 @@ final class IntervalBuffer: @unchecked Sendable {
 
     // MARK: - Render Thread API
 
-    /// Capture audio from the render thread. Mixes stereo to mono.
+    /// Capture audio from the render thread.
     /// Called from DSPKernel.process() — must be RT-safe (no locks, no allocations).
+    ///
+    /// In stereo mode, writes interleaved L/R samples. In mono mode, mixes down to mono.
     ///
     /// - Parameters:
     ///   - inputL: Left channel samples
@@ -160,19 +167,36 @@ final class IntervalBuffer: @unchecked Sendable {
         let effectiveLength = intervalLength > 0 ? intervalLength : _intervalLength.load(ordering: .acquiring)
         guard effectiveLength > 0 else { return false }
 
-        // Mix stereo to mono using stack allocation (RT-safe)
-        withUnsafeTemporaryAllocation(of: Float.self, capacity: frameCount) { monoBuffer in
-            let mono = monoBuffer.baseAddress!
-
-            if let inputR = inputR {
-                for i in 0..<frameCount {
-                    mono[i] = (inputL[i] + inputR[i]) * 0.5
+        if stereo {
+            // Interleave L/R into capture buffer (RT-safe stack allocation)
+            withUnsafeTemporaryAllocation(of: Float.self, capacity: frameCount * 2) { buf in
+                let ptr = buf.baseAddress!
+                if let inputR = inputR {
+                    for i in 0..<frameCount {
+                        ptr[i * 2] = inputL[i]
+                        ptr[i * 2 + 1] = inputR[i]
+                    }
+                } else {
+                    for i in 0..<frameCount {
+                        ptr[i * 2] = inputL[i]
+                        ptr[i * 2 + 1] = inputL[i]
+                    }
                 }
-            } else {
-                mono.update(from: inputL, count: frameCount)
+                captureBuffer.write(from: ptr, count: frameCount * 2)
             }
-
-            captureBuffer.write(from: mono, count: frameCount)
+        } else {
+            // Mix stereo to mono (RT-safe stack allocation)
+            withUnsafeTemporaryAllocation(of: Float.self, capacity: frameCount) { buf in
+                let mono = buf.baseAddress!
+                if let inputR = inputR {
+                    for i in 0..<frameCount {
+                        mono[i] = (inputL[i] + inputR[i]) * 0.5
+                    }
+                } else {
+                    mono.update(from: inputL, count: frameCount)
+                }
+                captureBuffer.write(from: mono, count: frameCount)
+            }
         }
 
         // Count samples and detect interval boundary
@@ -224,9 +248,10 @@ final class IntervalBuffer: @unchecked Sendable {
             remaining -= actualRead
 
             guard let encoder = currentEncoder else { continue }
+            let encoderChannels = stereo ? 2 : 1
             do {
                 let encoded = try readBuffer.withUnsafeBufferPointer { ptr in
-                    try encoder.write(samples: ptr.baseAddress!, frameCount: actualRead)
+                    try encoder.write(samples: ptr.baseAddress!, frameCount: actualRead / encoderChannels)
                 }
                 if !encoded.isEmpty {
                     sendWrite(audioData: encoded, isEnd: false)
@@ -281,7 +306,7 @@ final class IntervalBuffer: @unchecked Sendable {
         currentGUID = Self.randomGUID()
         do {
             currentEncoder = try OggVorbisStreamEncoder(
-                sampleRate: sampleRate, channels: 1, quality: encoderQuality
+                sampleRate: sampleRate, channels: stereo ? 2 : 1, quality: encoderQuality
             )
         } catch {
             logger.error("Failed to create encoder: \(error)")

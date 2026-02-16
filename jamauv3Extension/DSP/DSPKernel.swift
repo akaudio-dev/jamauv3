@@ -17,7 +17,7 @@ final class DSPKernel: @unchecked Sendable {
     // MARK: - Properties
 
     private(set) var sampleRate: Double = 44100.0
-    private var userGains: [Float] = Array(repeating: 0.75, count: Int(jamauv3ExtensionNumUsers))
+    private var userGains: [Float] = Array(repeating: 1.0, count: Int(jamauv3ExtensionNumUsers))
 
     private var noteEnvelope: Float = 1.0  // Initialize to 1.0 so audio passes through even without MIDI
     private var bypassed: Bool = false

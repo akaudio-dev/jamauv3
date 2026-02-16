@@ -206,6 +206,99 @@ struct OggVorbisEncoderTests {
         #expect(OggVorbisEncoder.qualityForBitrate(500, channels: 1) == 1.0)
     }
 
+    @Test("Level preservation through encode/decode at various quality settings")
+    func levelPreservation() throws {
+        let sampleRate = 44100
+        let duration: Float = 4.0
+        let inputAmplitude: Float = 0.8
+
+        // Generate a 440 Hz sine wave
+        let original = sineWave(frequency: 440, sampleRate: sampleRate, duration: duration, amplitude: inputAmplitude)
+
+        // RMS of a perfect sine: amplitude / sqrt(2)
+        let expectedRMS = inputAmplitude / sqrt(2.0)
+
+        for quality: Float in [-0.1, 0.0, 0.1, 0.3, 0.5, 0.75, 1.0] {
+            let encoded = try OggVorbisEncoder.encode(
+                samples: original, sampleRate: sampleRate, channels: 1, quality: quality
+            )
+            let decoded = try OggVorbisDecoder.decode(data: encoded)
+
+            // Skip encoder delay (2048 samples) at start/end
+            let skip = 4096
+            let end = decoded.samples.count - skip
+            guard end > skip else { continue }
+            let samples = Array(decoded.samples[skip..<end])
+
+            // Compute peak and RMS
+            let peak = samples.map { abs($0) }.max() ?? 0
+            var sumSq: Float = 0
+            for s in samples { sumSq += s * s }
+            let rms = sqrt(sumSq / Float(samples.count))
+
+            let peakRatio = peak / inputAmplitude
+            let rmsRatio = rms / expectedRMS
+
+            // Log the results for analysis
+            print("Quality \(String(format: "%+.1f", quality)): peak=\(String(format: "%.4f", peak)) (\(String(format: "%.1f%%", peakRatio * 100))), RMS=\(String(format: "%.4f", rms)) (\(String(format: "%.1f%%", rmsRatio * 100))), size=\(encoded.count / 1024)KB")
+
+            // At any quality, level should be preserved within reasonable bounds
+            // This test is diagnostic — if peak or RMS is significantly below 100%,
+            // that explains the level discrepancy
+            #expect(peakRatio > 0.5, "Peak dropped to \(peakRatio * 100)% at quality \(quality)")
+            #expect(peakRatio < 1.1, "Peak exceeded input at quality \(quality)")
+        }
+    }
+
+    @Test("Level preservation: streaming encoder (as IntervalBuffer uses it)")
+    func streamingLevelPreservation() throws {
+        let sampleRate = 44100
+        let duration: Float = 8.0  // Typical NINJAM interval
+        let inputAmplitude: Float = 0.8
+
+        let original = sineWave(frequency: 440, sampleRate: sampleRate, duration: duration, amplitude: inputAmplitude)
+        let expectedRMS = inputAmplitude / sqrt(2.0)
+
+        // Encode using streaming encoder at quality 0.1 (what IntervalBuffer uses)
+        let encoder = try OggVorbisStreamEncoder(sampleRate: sampleRate, channels: 1, quality: 0.1)
+        var output = Data()
+        let chunkSize = 512  // Same chunk size as IntervalBuffer
+
+        try original.withUnsafeBufferPointer { buf in
+            guard let base = buf.baseAddress else { return }
+            var offset = 0
+            while offset < original.count {
+                let frames = min(chunkSize, original.count - offset)
+                let data = try encoder.write(samples: base.advanced(by: offset), frameCount: frames)
+                output.append(data)
+                offset += frames
+            }
+        }
+        output.append(try encoder.finish())
+
+        // Decode
+        let decoded = try OggVorbisDecoder.decode(data: output)
+
+        // Analyze middle section
+        let skip = 4096
+        let end = decoded.samples.count - skip
+        #expect(end > skip, "Decoded signal too short")
+        let samples = Array(decoded.samples[skip..<end])
+
+        let peak = samples.map { abs($0) }.max() ?? 0
+        var sumSq: Float = 0
+        for s in samples { sumSq += s * s }
+        let rms = sqrt(sumSq / Float(samples.count))
+
+        let peakRatio = peak / inputAmplitude
+        let rmsRatio = rms / expectedRMS
+
+        print("Streaming q0.1: peak=\(String(format: "%.4f", peak)) (\(String(format: "%.1f%%", peakRatio * 100))), RMS=\(String(format: "%.4f", rms)) (\(String(format: "%.1f%%", rmsRatio * 100)))")
+
+        // If this shows ~61%, we found the codec attenuation
+        #expect(peakRatio > 0.5, "Peak dropped to \(peakRatio * 100)%")
+    }
+
     @Test("NINJAM interval: 8s mono at quality 0.1 produces reasonable output size")
     func ninjamIntervalSize() throws {
         // 8 seconds at 44100 Hz mono (typical NINJAM: 120 BPM, 16 BPI)
