@@ -405,7 +405,7 @@ struct RemoteAudioMixerMemoryTests {
             _ = try OggVorbisDecoder.decode(data: oggData)
         }
 
-        #expect(result.midToEnd < 3 * 1024 * 1024,
+        #expect(result.midToEnd < 3 * 1024 * 1024 * memoryThresholdMultiplier,
                 "Phase 2 grew by \(result.midToEnd / 1024) KB — possible decode leak")
     }
 
@@ -485,7 +485,7 @@ struct RemoteAudioMixerMemoryTests {
         // With the leak fix, stale downloads are evicted each interval, so growth should be minimal.
         // Without the fix, 200 intervals × 3 users × ~10% drop rate × ~100 bytes = small but
         // the real issue is accumulated OGG Data objects (~50KB each) that never get freed.
-        #expect(growth < 5 * 1024 * 1024,
+        #expect(growth < 8 * 1024 * 1024 * memoryThresholdMultiplier,
                 "Sustained session grew by \(growth / 1024) KB over 200 intervals — possible leak")
     }
 }

@@ -10,6 +10,13 @@ import AudioToolbox
 
 // MARK: - Memory Measurement
 
+/// Thread Sanitizer inflates resident memory due to shadow memory and instrumentation overhead.
+/// Memory threshold tests should multiply their limits by this factor.
+let memoryThresholdMultiplier: Int = {
+    if ProcessInfo.processInfo.environment["TSAN_OPTIONS"] != nil { return 10 }
+    return 1
+}()
+
 /// Measure resident memory of the current process.
 func residentMemoryBytes() -> Int {
     var info = mach_task_basic_info()

@@ -237,7 +237,7 @@ struct MemoryTests {
 
         // Phase 2 should show near-zero growth if no leak.
         // A real leak of ~50 KB/encoder × 200 = ~10 MB would show up clearly.
-        #expect(result.midToEnd < 2 * 1024 * 1024,
+        #expect(result.midToEnd < 2 * 1024 * 1024 * memoryThresholdMultiplier,
                 "Phase 2 grew by \(result.midToEnd / 1024) KB (phase 1: \(result.warmupToMid / 1024) KB) — possible encoder leak")
     }
 
@@ -254,7 +254,7 @@ struct MemoryTests {
             // Intentionally NOT calling finish() — deinit must still free C structs
         }
 
-        #expect(result.midToEnd < 2 * 1024 * 1024,
+        #expect(result.midToEnd < 2 * 1024 * 1024 * memoryThresholdMultiplier,
                 "Phase 2 grew by \(result.midToEnd / 1024) KB (phase 1: \(result.warmupToMid / 1024) KB) — deinit may not be freeing C resources")
     }
 
@@ -270,7 +270,7 @@ struct MemoryTests {
             _ = try OggVorbisDecoder.decode(data: encoded)
         }
 
-        #expect(result.midToEnd < 3 * 1024 * 1024,
+        #expect(result.midToEnd < 3 * 1024 * 1024 * memoryThresholdMultiplier,
                 "Phase 2 grew by \(result.midToEnd / 1024) KB (phase 1: \(result.warmupToMid / 1024) KB) — possible encode/decode leak")
     }
 }

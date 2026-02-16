@@ -47,7 +47,8 @@
 - ✅ **Chat terminal**: send+receive messages, auto-scroll, server topic bar
 - ✅ **Auto-reconnect**: reconnects to saved server on AU load (no UI required)
 - ✅ **Memory leak fix**: stale GUID eviction in RemoteAudioMixer prevents unbounded activeDownloads growth
-- ✅ Tests: protocol parsing, E2E auth, OGG encode/decode, interval serialization, remote mixer, memory leak detection, **level preservation** (66 tests pass)
+- ✅ **Per-user level meters**: 4px green/red peak meters next to each gain slider, ~15 Hz update with exponential decay, real usernames from server replace "User N" labels. Peaks measured in `mixInto()` (post-gain), collected via DSPKernel-owned scratch buffer, published to atomic storage after render callback — ensures meters are tied to actual output timing
+- ✅ Tests: protocol parsing, E2E auth, OGG encode/decode, interval serialization, remote mixer, memory leak detection, **level preservation** (66 tests pass). Memory leak tests use TSan-aware thresholds (`memoryThresholdMultiplier` in TestHelpers.swift) — pass with both `-enableThreadSanitizer YES` and without
 
 ### Interval Buffer Architecture (Upload)
 ```
@@ -111,7 +112,6 @@ User reports remote audio requires ~164% gain to match the passthrough signal le
 
 ### 1. Integration (High Priority)
 - Investigate signal level discrepancy (see Known Issues above)
-- Wire up per-user gain controls (already in UI, RemoteAudioMixer maps users to gain slots 0-7)
 - Implement metronome (click on beat 1 / all beats, render thread)
 - Accept host's audio format dynamically (currently defaults to 44100 Hz)
 
@@ -130,7 +130,7 @@ User reports remote audio requires ~164% gain to match the passthrough signal le
 - **NINJAM port:** 2049
 - **Protocol:** OGG Vorbis @ 64-96 kbps, BPM/BPI-based intervals
 - **Common settings:** 120 BPM, 16 BPI = 8 second intervals
-- **NINJAMClient:** Use from UI via `@ObservedObject` - has `isConnected`, `connectionStatus`, `lastError`, `bpm`, `bpi`, `currentBeat`, `intervalProgress`, `hostBPM`, `serverTopic`, `chatMessages`, `isBPMMismatch`
+- **NINJAMClient:** Use from UI via `@ObservedObject` - has `isConnected`, `connectionStatus`, `lastError`, `bpm`, `bpi`, `currentBeat`, `intervalProgress`, `hostBPM`, `serverTopic`, `chatMessages`, `isBPMMismatch`, `userPeaks`, `slotUsernames`
 - **Upload messages:** `ClientUploadIntervalBegin` (0x83, fourCC=`0x7647474F` for OGG, 0 for silence) + `ClientUploadIntervalWrite` (0x84, flags bit 0 = end of interval)
 - **IntervalConfig:** `IntervalConfig(bpm:bpi:sampleRate:)` → `intervalLengthInSamples` (e.g. 120 BPM, 16 BPI, 44100 Hz = 352800 samples)
 - **AU type:** `aumf` (Music Effect) — receives audio + MIDI, enables tempo/transport sync
@@ -146,6 +146,7 @@ User reports remote audio requires ~164% gain to match the passthrough signal le
 - **IntervalBuffer:** 3-thread model (render → SPSC CircularBuffer → encoding thread → @MainActor callbacks). Start/stop managed by AudioUnitViewController via NINJAMClientDelegate
 - **RemoteAudioMixer:** 3-thread model (@MainActor accumulates OGG fragments → decode thread decodes to PCM → render thread mixes). Double-buffered: decode writes nextBuffer, render swaps at interval boundary. Uses PlaybackBuffer (flat linear buffer) not CircularBuffer. Lives in Shared/Audio/ (compiled into both host + extension)
 - **Download messages:** `ServerDownloadIntervalBegin` (0x04, GUID, username, channelIndex, fourCC) + `ServerDownloadIntervalWrite` (0x05, GUID, flags, audioData). Delegate passes fourCC so mixer can skip silence intervals
+- **Level meters:** Per-slot peaks measured in `RemoteAudioMixer.mixInto()` (post-gain) via `outPeaks` parameter — a DSPKernel-owned scratch buffer passed into `mixInto()`. DSPKernel resets scratch to zero each render callback, collects peaks during mix, then publishes to `userPeakStorage` (UInt32 bit patterns, max-accumulated). `AudioUnitViewController.meterTask` (~15 Hz) reads+resets via `DSPKernel.exchangeUserPeak(slot:)`, applies ×0.85 decay, writes `NINJAMClient.userPeaks`/`.slotUsernames`. `VerticalGainSlider` renders 4px green/red bar (red when >1.0) + real username. Peaks are tied to the render callback that writes the output buffer, ensuring meters reflect actual playback timing
 
 ## Testing
 
@@ -155,6 +156,8 @@ NINJAM_TEST_HOST="..." NINJAM_TEST_PORT="..." NINJAM_TEST_USER="..." NINJAM_TEST
 ```
 
 **Note:** Use `-enableCodeCoverage NO` to avoid `___llvm_profile_runtime` linker errors with C package targets (swift-ogg).
+
+**Thread Sanitizer:** All tests pass with `-enableThreadSanitizer YES`. Memory leak tests auto-detect TSan via `TSAN_OPTIONS` env var and relax thresholds (10×) to accommodate shadow memory overhead. See `memoryThresholdMultiplier` in `TestHelpers.swift`.
 
 ## Reference Codebases
 - **JamTaba:** `~/work/github/JamTaba/src/Common/ninjam/` - Modern Qt client

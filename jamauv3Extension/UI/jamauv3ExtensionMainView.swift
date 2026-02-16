@@ -99,7 +99,11 @@ struct jamauv3ExtensionMainView: View {
             HStack(spacing: 0) {
                 let usersGroup: ObservableAUParameterGroup = parameterTree.users
                 ForEach(0..<usersGroup.parameters.count, id: \.self) { index in
-                    VerticalGainSlider(param: usersGroup.parameters[index])
+                    VerticalGainSlider(
+                        param: usersGroup.parameters[index],
+                        peakLevel: ninjamClient.userPeaks[index],
+                        username: ninjamClient.slotUsernames[index]
+                    )
                 }
             }
             .frame(maxWidth: .infinity)

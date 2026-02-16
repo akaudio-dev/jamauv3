@@ -84,6 +84,10 @@ final class NINJAMClient: ObservableObject {
     @Published var serverTopic: String = ""
     @Published var chatMessages: [ChatEntry] = []
 
+    // Per-user meter levels and slot usernames (updated ~15 Hz by meter timer)
+    @Published var userPeaks: [Float] = Array(repeating: 0, count: 8)
+    @Published var slotUsernames: [String] = Array(repeating: "", count: 8)
+
     var isBPMMismatch: Bool {
         hostBPM > 0 && bpm > 0 && abs(hostBPM - Double(bpm)) > 0.5
     }

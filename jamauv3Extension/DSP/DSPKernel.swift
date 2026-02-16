@@ -30,6 +30,28 @@ final class DSPKernel: @unchecked Sendable {
     let inputPeak = Atomic<UInt32>(0)   // Float bits stored as UInt32 for atomic access
     let outputPeak = Atomic<UInt32>(0)
 
+    /// Per-user output peaks: render thread writes each callback, main thread reads at ~15 Hz.
+    /// Stored as Float bit patterns in UInt32 atomics for lock-free render→main thread transfer.
+    private let userPeakStorage: UnsafeMutablePointer<UInt32> = {
+        let ptr = UnsafeMutablePointer<UInt32>.allocate(capacity: 8)
+        ptr.initialize(repeating: 0, count: 8)
+        return ptr
+    }()
+    /// Scratch buffer for collecting peaks within a single render callback (render thread only).
+    private let userPeakScratch: UnsafeMutablePointer<Float> = {
+        let ptr = UnsafeMutablePointer<Float>.allocate(capacity: 8)
+        ptr.initialize(repeating: 0, count: 8)
+        return ptr
+    }()
+
+    /// Read and reset peak for a user slot (called from main thread ~15 Hz).
+    func exchangeUserPeak(slot: Int) -> Float {
+        guard slot >= 0, slot < 8 else { return 0 }
+        let bits = userPeakStorage[slot]
+        userPeakStorage[slot] = 0
+        return Float(bitPattern: bits)
+    }
+
     /// Remote audio mixer for decoding and playing back other users' audio
     var remoteAudioMixer: RemoteAudioMixer?
 
@@ -59,7 +81,8 @@ final class DSPKernel: @unchecked Sendable {
     }
     
     func deInitialize() {
-        // Cleanup if needed
+        userPeakStorage.deallocate()
+        userPeakScratch.deallocate()
     }
     
     // MARK: - Bypass
@@ -293,12 +316,24 @@ final class DSPKernel: @unchecked Sendable {
         }
 
         // Mix remote users' audio into the output
+        // Reset per-user peak scratch buffer, collect peaks during mix, then publish to atomics
+        let scratch = userPeakScratch
+        for i in 0..<8 { scratch[i] = 0 }
         userGains.withUnsafeBufferPointer { gainsPtr in
             remoteAudioMixer?.mixInto(
                 outputBufferList: outputBufferList,
                 frameCount: Int(frameCount),
                 userGains: gainsPtr,
+                outPeaks: scratch,
                 intervalLength: currentIntervalLength)
+        }
+        // Publish peaks from this render callback (max-accumulate into atomic storage)
+        let storage = userPeakStorage
+        for i in 0..<8 {
+            let peakBits = scratch[i].bitPattern
+            if peakBits > storage[i] {
+                storage[i] = peakBits
+            }
         }
     }
     

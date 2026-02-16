@@ -199,6 +199,15 @@ final class RemoteAudioMixer: @unchecked Sendable {
         logger.info("RemoteAudioMixer stopped")
     }
 
+    /// Returns an array of 8 usernames indexed by slot. Called from main thread only.
+    func slotUsernames() -> [String] {
+        var result = Array(repeating: "", count: 8)
+        for (username, slot) in userSlots {
+            result[slot] = username
+        }
+        return result
+    }
+
     func updateConfig(_ config: IntervalConfig) {
         _intervalLength.store(config.intervalLengthInSamples, ordering: .releasing)
         _sampleRate.store(Int(config.sampleRate), ordering: .releasing)
@@ -409,9 +418,11 @@ final class RemoteAudioMixer: @unchecked Sendable {
     /// Mix remote audio into the output buffer. Called from DSPKernel.process().
     /// Nearly RT-safe: only a brief Mutex lock (os_unfair_lock, nanosecond hold time) for snapshot pickup.
     /// userGains is passed as UnsafeBufferPointer to avoid Array retain/release on the render thread.
+    /// outPeaks: caller-owned buffer of 8 Floats; mixer max-accumulates per-slot peaks into it.
     func mixInto(outputBufferList: UnsafeMutablePointer<AudioBufferList>,
                  frameCount: Int,
                  userGains: UnsafeBufferPointer<Float>,
+                 outPeaks: UnsafeMutablePointer<Float>? = nil,
                  intervalLength: Int = 0) {
 
         // Use passed intervalLength if nonzero, else fall back to internal config
@@ -476,18 +487,32 @@ final class RemoteAudioMixer: @unchecked Sendable {
 
             samplesMixedCount.wrappingAdd(framesRead, ordering: .relaxed)
 
+            var peak: Float = 0
             if ch >= 2 {
                 // Stereo: deinterleave and mix L→L, R→R
                 for i in 0..<framesRead {
-                    outL[i] += temp[i * 2] * gain
-                    outputR?[i] += temp[i * 2 + 1] * gain
+                    let sL = temp[i * 2] * gain
+                    let sR = temp[i * 2 + 1] * gain
+                    let s = max(abs(sL), abs(sR))
+                    if s > peak { peak = s }
+                    outL[i] += sL
+                    outputR?[i] += sR
                 }
             } else {
                 // Mono: duplicate to both channels
                 for i in 0..<framesRead {
                     let sample = temp[i] * gain
+                    let s = abs(sample)
+                    if s > peak { peak = s }
                     outL[i] += sample
                     outputR?[i] += sample
+                }
+            }
+
+            // Store peak for this slot (max-accumulate into caller's buffer)
+            if let outPeaks, slot < 8 {
+                if peak > outPeaks[slot] {
+                    outPeaks[slot] = peak
                 }
             }
         }

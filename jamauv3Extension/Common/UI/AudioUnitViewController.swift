@@ -26,6 +26,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
     private var intervalBuffer: IntervalBuffer?
     private var remoteAudioMixer: RemoteAudioMixer?
     private var diagnosticTask: Task<Void, Never>?
+    private var meterTask: Task<Void, Never>?
 
 	/* iOS View lifcycle
 	public override func viewWillAppear(_ animated: Bool) {
@@ -146,6 +147,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
 
         // Periodic diagnostic: log mixer pipeline counters every 5 seconds
         startMixerDiagnostics()
+        startMeterTimer()
     }
 
     /// Stop interval capture on disconnect
@@ -179,6 +181,8 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
     }
 
     private func stopRemoteAudioMixer() {
+        meterTask?.cancel()
+        meterTask = nil
         diagnosticTask?.cancel()
         diagnosticTask = nil
         remoteAudioMixer?.stop()
@@ -220,6 +224,24 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
                 }
 
                 log.info("Mixer stats: decodes=\(decodes) swaps=\(swaps) mixed=\(mixed) mixCalls=\(mixCalls) inPeak=\(inputPeakStr, privacy: .public) outPeak=\(outputPeakStr, privacy: .public) hostBPM=\(String(format: "%.1f", hostTempoVal), privacy: .public) correctedInterval=\(correctedLen)")
+            }
+        }
+    }
+
+    private func startMeterTimer() {
+        meterTask?.cancel()
+        meterTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(66))  // ~15 Hz
+                guard let self,
+                      let kernel = (self.audioUnit as? jamauv3ExtensionAudioUnit)?.kernel,
+                      let mixer = self.remoteAudioMixer else { continue }
+                for i in 0..<8 {
+                    let peak = kernel.exchangeUserPeak(slot: i)
+                    let current = self.ninjamClient.userPeaks[i]
+                    self.ninjamClient.userPeaks[i] = peak > current ? peak : current * 0.85
+                }
+                self.ninjamClient.slotUsernames = mixer.slotUsernames()
             }
         }
     }
