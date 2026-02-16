@@ -41,12 +41,13 @@
 - ✅ **Bidirectional audio**: local audio captured and sent to server, remote audio received and mixed into output
 - ✅ AudioUnitViewController wires IntervalBuffer + RemoteAudioMixer ↔ NINJAMClient (auto start/stop/config update)
 - ✅ **Host Tempo Sync**: reads host musical context (tempo, beat position) every render callback, computes drift at interval boundaries, corrects next interval length ±256 samples. Both IntervalBuffer and RemoteAudioMixer receive the corrected length for synchronized boundaries
+- ✅ **Transport Snap**: detects DAW transport start, seek, and initial NINJAM connect — snaps `samplePosition` in both IntervalBuffer and RemoteAudioMixer so interval boundaries align with BPI-multiple beats on the DAW grid. Uses `transportStateBlock` with beat-position-change fallback
 - ✅ **HUD overlay**: server topic, host BPM with mismatch warning, chat messages (join/part/message/topic, capped at 50 entries)
 - ✅ **Stereo mode**: configurable mono/stereo capture+playback (ConnectionSettings toggle, persisted to UserDefaults)
 - ✅ **Chat terminal**: send+receive messages, auto-scroll, server topic bar
 - ✅ **Auto-reconnect**: reconnects to saved server on AU load (no UI required)
 - ✅ **Memory leak fix**: stale GUID eviction in RemoteAudioMixer prevents unbounded activeDownloads growth
-- ✅ Tests: protocol parsing, E2E auth, OGG encode/decode, interval serialization, remote mixer, memory leak detection, **level preservation** (65 tests pass)
+- ✅ Tests: protocol parsing, E2E auth, OGG encode/decode, interval serialization, remote mixer, memory leak detection, **level preservation** (66 tests pass)
 
 ### Interval Buffer Architecture (Upload)
 ```
@@ -79,6 +80,10 @@ NINJAMClient delegate           decodeLoop() ~100Hz              DSPKernel.proce
 Render thread (DSPKernel.process())
   │ contextBlock(&tempo, nil, nil, &beatPosition, nil, nil)
   │ store to hostTempo / hostBeatPosition atomics
+  │ snapToBeatGridIfNeeded() — on transport start/seek/connect:
+  │   compute targetPosition = (beatPos mod BPI) × samplesPerBeat
+  │   IntervalBuffer.snapSamplePosition(target)
+  │   RemoteAudioMixer.snapSamplePosition(target)
   │ load correctedIntervalLength
   │ pass to IntervalBuffer.captureAudio(intervalLength:) → returns boundaryHit
   │ pass to RemoteAudioMixer.mixInto(intervalLength:)
@@ -130,8 +135,9 @@ User reports remote audio requires ~164% gain to match the passthrough signal le
 - **IntervalConfig:** `IntervalConfig(bpm:bpi:sampleRate:)` → `intervalLengthInSamples` (e.g. 120 BPM, 16 BPI, 44100 Hz = 352800 samples)
 - **AU type:** `aumf` (Music Effect) — receives audio + MIDI, enables tempo/transport sync
 - **Render block:** Pulls input directly into the output buffer for in-place processing (`pullBlock(..., outputData)`). Do NOT use a separate BufferedInputBus for audio — hosts (e.g. Ableton) return `mDataByteSize=0` when pulling into a separate buffer. `channelCapabilities = [-1, -1]` (any matching N-in/N-out). `canProcessInPlace = true`
-- **Musical context:** `DSPKernel.musicalContextBlock` reads host tempo + beat position every render callback. Stored in `hostTempo`/`hostBeatPosition` atomics (render→main thread). Used for drift correction at interval boundaries
+- **Musical context:** `DSPKernel.musicalContextBlock` reads host tempo + beat position every render callback. `DSPKernel.transportStateBlock` reads transport moving/stopped state. Both wired in `allocateRenderResources()`. Tempo/beat stored in `hostTempo`/`hostBeatPosition` atomics (render→main thread). Used for drift correction and transport snap
 - **Drift correction:** `DSPKernel.computeDriftCorrection()` compares host beat position to nearest BPI multiple at each interval boundary. Only active when host BPM ≈ NINJAM BPM (within 0.5). Adjusts `correctedIntervalLength` by up to ±256 samples. Both IntervalBuffer and RemoteAudioMixer receive the corrected length
+- **Transport snap:** `DSPKernel.snapToBeatGridIfNeeded()` detects transport start (`transportMoving && !wasTransportMoving`), seek (beat position jump > 2× expected), and initial connect (`needsInitialSnap` flag). Snaps `samplePosition` in IntervalBuffer and RemoteAudioMixer to `(beatPos mod BPI) × samplesPerBeat`. Falls back to beat-position-change detection if `transportStateBlock` is nil. One-interval glitch at snap is acceptable — next boundary starts fresh
 - **NINJAM timing:** No server-side timestamps or beat positions. All timing is pure local sample counting against `intervalLengthInSamples`. Matches njclient.cpp and JamTaba reference implementations
 - **HUD:** `ChatEntry` struct with `.message`/`.join`/`.part`/`.topic` types. `NINJAMClient.addChatEntry()` caps at 50 entries. `AudioUnitViewController.didReceiveChatMessage` populates entries + sets `serverTopic`. Diagnostic timer reads `hostTempo` atomic → `ninjamClient.hostBPM`
 - **OGG encoder quality:** Default 0.1 ≈ 75 kbps mono. Scale: -0.1 (45 kbps) → 0.0 (64 kbps) → 0.1 (75 kbps) → 0.3 (95 kbps) → 0.5 (110 kbps) → 0.75 (140 kbps) → 1.0 (240 kbps). Codec is lossy (psychoacoustic, like MP3) but level-transparent (RMS preserved at ~100%)

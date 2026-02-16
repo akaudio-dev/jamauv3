@@ -400,6 +400,12 @@ final class RemoteAudioMixer: @unchecked Sendable {
 
     // MARK: - Render Thread API
 
+    /// Snap the sample position to align with the DAW beat grid.
+    /// Called from DSPKernel.process() on transport start/seek. RT-safe (single atomic store).
+    func snapSamplePosition(_ newPosition: Int) {
+        samplePosition.store(newPosition, ordering: .releasing)
+    }
+
     /// Mix remote audio into the output buffer. Called from DSPKernel.process().
     /// Nearly RT-safe: only a brief Mutex lock (os_unfair_lock, nanosecond hold time) for snapshot pickup.
     /// userGains is passed as UnsafeBufferPointer to avoid Array retain/release on the render thread.

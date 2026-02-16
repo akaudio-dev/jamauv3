@@ -34,6 +34,7 @@ final class DSPKernel: @unchecked Sendable {
     var remoteAudioMixer: RemoteAudioMixer?
 
     var musicalContextBlock: AUHostMusicalContextBlock?
+    var transportStateBlock: AUHostTransportStateBlock?
     var midiOutputEventBlock: AUMIDIEventListBlock?
 
     /// Host tempo (Double.bitPattern), render thread writes, main thread reads via diagnostic timer
@@ -45,6 +46,11 @@ final class DSPKernel: @unchecked Sendable {
     private var baseIntervalLength: Int = 0
     private var ninjamBPI: Int = 0
     let correctedIntervalLength = Atomic<Int>(0)
+
+    // Transport sync: snap interval position to DAW beat grid
+    private var wasTransportMoving: Bool = false
+    private var previousBeatPosition: Double = 0
+    let needsInitialSnap = Atomic<Bool>(false)
     
     // MARK: - Initialization
     
@@ -106,6 +112,65 @@ final class DSPKernel: @unchecked Sendable {
         ninjamBPI = bpi
         baseIntervalLength = intervalLength
         correctedIntervalLength.store(intervalLength, ordering: .releasing)
+        needsInitialSnap.store(true, ordering: .releasing)
+    }
+
+    /// Detect transport start, seek, or initial connect and snap interval position to DAW beat grid.
+    /// Called from process() — RT-safe (atomics only, no allocations).
+    private func snapToBeatGridIfNeeded(tempo: Double, beatPosition: Double, frameCount: Int) {
+        // Determine transport state
+        var transportMoving = false
+        if let tsBlock = transportStateBlock {
+            var flags = AUHostTransportStateFlags()
+            _ = tsBlock(&flags, nil, nil, nil)
+            transportMoving = flags.contains(.moving)
+        } else {
+            // Fallback: infer "moving" from beat position changing
+            transportMoving = (beatPosition != previousBeatPosition)
+        }
+
+        // Detect snap triggers
+        let transportStarted = transportMoving && !wasTransportMoving
+        let initialSnap = needsInitialSnap.load(ordering: .acquiring)
+
+        // Seek detection: beat position jumped more than expected for this buffer
+        var seekDetected = false
+        if transportMoving && wasTransportMoving && tempo > 0 {
+            let beatsPerBuffer = (tempo / 60.0) * (Double(frameCount) / sampleRate)
+            let actualJump = abs(beatPosition - previousBeatPosition)
+            // Allow 2× expected jump as tolerance before considering it a seek
+            if actualJump > beatsPerBuffer * 2.0 && actualJump > 0.5 {
+                seekDetected = true
+            }
+        }
+
+        wasTransportMoving = transportMoving
+        previousBeatPosition = beatPosition
+
+        guard transportStarted || seekDetected || initialSnap else { return }
+        guard ninjamBPI > 0, baseIntervalLength > 0, tempo > 0 else { return }
+
+        // Only snap when host BPM ≈ NINJAM BPM
+        let ninjamBPM = Double(ninjamBPI) / (Double(baseIntervalLength) / sampleRate) * 60.0
+        guard abs(tempo - ninjamBPM) < 0.5 else { return }
+
+        // Compute where we should be within the interval
+        let bpi = Double(ninjamBPI)
+        let beatWithinInterval = beatPosition.truncatingRemainder(dividingBy: bpi)
+        let positiveBeat = beatWithinInterval >= 0 ? beatWithinInterval : beatWithinInterval + bpi
+        let samplesPerBeat = 60.0 / tempo * sampleRate
+        let targetPosition = Int(positiveBeat * samplesPerBeat)
+        let clampedTarget = max(0, min(targetPosition, baseIntervalLength - 1))
+
+        intervalBuffer?.snapSamplePosition(clampedTarget)
+        remoteAudioMixer?.snapSamplePosition(clampedTarget)
+
+        // Also reset drift correction to base after a snap
+        correctedIntervalLength.store(baseIntervalLength, ordering: .relaxed)
+
+        if initialSnap {
+            needsInitialSnap.store(false, ordering: .releasing)
+        }
     }
 
     /// Compute drift between host beat position and NINJAM interval boundary.
@@ -154,6 +219,9 @@ final class DSPKernel: @unchecked Sendable {
             hostTempo.store(tempo.bitPattern, ordering: .relaxed)
             hostBeatPosition.store(beatPosition.bitPattern, ordering: .relaxed)
         }
+
+        // Detect transport start/seek and snap interval position to DAW beat grid
+        snapToBeatGridIfNeeded(tempo: tempo, beatPosition: beatPosition, frameCount: Int(frameCount))
 
         let currentIntervalLength = correctedIntervalLength.load(ordering: .acquiring)
 

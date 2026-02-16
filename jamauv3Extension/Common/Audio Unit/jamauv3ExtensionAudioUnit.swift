@@ -96,6 +96,7 @@ public class jamauv3ExtensionAudioUnit: AUAudioUnit, @unchecked Sendable
 
         kernel.midiOutputEventBlock = self.midiOutputEventListBlock
         kernel.musicalContextBlock = self.musicalContextBlock
+        kernel.transportStateBlock = self.transportStateBlock
         kernel.initialize(inputChannelCount: Int(inputChannelCount),
                          outputChannelCount: Int(outputChannelCount),
                          sampleRate: outFmt.sampleRate)

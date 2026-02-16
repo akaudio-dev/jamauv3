@@ -147,6 +147,12 @@ final class IntervalBuffer: @unchecked Sendable {
 
     // MARK: - Render Thread API
 
+    /// Snap the sample position to align with the DAW beat grid.
+    /// Called from DSPKernel.process() on transport start/seek. RT-safe (single atomic store).
+    func snapSamplePosition(_ newPosition: Int) {
+        samplePosition.store(newPosition, ordering: .releasing)
+    }
+
     /// Capture audio from the render thread.
     /// Called from DSPKernel.process() — must be RT-safe (no locks, no allocations).
     ///
