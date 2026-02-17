@@ -48,6 +48,7 @@
 - ✅ **Auto-reconnect**: reconnects to saved server on AU load (no UI required)
 - ✅ **Memory leak fix**: stale GUID eviction in RemoteAudioMixer prevents unbounded activeDownloads growth
 - ✅ **Per-user level meters**: 4px green/red peak meters next to each gain slider, ~15 Hz update with exponential decay, real usernames from server replace "User N" labels. Peaks measured in `mixInto()` (post-gain), collected via DSPKernel-owned scratch buffer, published to atomic storage after render callback — ensures meters are tied to actual output timing
+- ✅ **Dynamic host audio format**: AU declares default format matching hardware sample rate (CoreAudio on macOS, AVAudioSession on iOS). Detects sample rate changes across `allocateRenderResources` cycles and reconfigures IntervalBuffer + RemoteAudioMixer. Peak buffers survive dealloc/realloc cycles
 - ✅ Tests: protocol parsing, E2E auth, OGG encode/decode, interval serialization, remote mixer, memory leak detection, **level preservation** (66 tests pass). Memory leak tests use TSan-aware thresholds (`memoryThresholdMultiplier` in TestHelpers.swift) — pass with both `-enableThreadSanitizer YES` and without
 
 ### Interval Buffer Architecture (Upload)
@@ -113,13 +114,11 @@ User reports remote audio requires ~164% gain to match the passthrough signal le
 ### 1. Integration (High Priority)
 - Investigate signal level discrepancy (see Known Issues above)
 - Implement metronome (click on beat 1 / all beats, render thread)
-- Accept host's audio format dynamically (currently defaults to 44100 Hz)
 
 ### 2. Polish (Medium Priority)
 - Configurable OGG encoder quality (currently hardcoded at 0.1 ≈ 75 kbps; range -0.1 to 1.0, see quality-to-bitrate mapping in `OggVorbisEncoder.qualityForBitrate`)
 - Settings persistence (audio quality, latency compensation)
 - Error handling improvements (reconnect logic, timeout UX)
-- User list display (show connected users with channel names)
 
 ### 3. Platform (Lower Priority)
 - iOS/iPadOS build + testing
@@ -134,7 +133,7 @@ User reports remote audio requires ~164% gain to match the passthrough signal le
 - **Upload messages:** `ClientUploadIntervalBegin` (0x83, fourCC=`0x7647474F` for OGG, 0 for silence) + `ClientUploadIntervalWrite` (0x84, flags bit 0 = end of interval)
 - **IntervalConfig:** `IntervalConfig(bpm:bpi:sampleRate:)` → `intervalLengthInSamples` (e.g. 120 BPM, 16 BPI, 44100 Hz = 352800 samples)
 - **AU type:** `aumf` (Music Effect) — receives audio + MIDI, enables tempo/transport sync
-- **Render block:** Pulls input directly into the output buffer for in-place processing (`pullBlock(..., outputData)`). Do NOT use a separate BufferedInputBus for audio — hosts (e.g. Ableton) return `mDataByteSize=0` when pulling into a separate buffer. `channelCapabilities = [-1, -1]` (any matching N-in/N-out). `canProcessInPlace = true`
+- **Render block:** Pulls input directly into the output buffer for in-place processing (`pullBlock(..., outputData)`). Do NOT use a separate BufferedInputBus for audio — hosts (e.g. Ableton) return `mDataByteSize=0` when pulling into a separate buffer. `channelCapabilities = [-1, -1]` (any matching N-in/N-out). `canProcessInPlace = true`. Default format uses hardware sample rate (CoreAudio on macOS, AVAudioSession on iOS); `onSampleRateChange` callback reconfigures IntervalBuffer + RemoteAudioMixer on mid-session rate changes
 - **Musical context:** `DSPKernel.musicalContextBlock` reads host tempo + beat position every render callback. `DSPKernel.transportStateBlock` reads transport moving/stopped state. Both wired in `allocateRenderResources()`. Tempo/beat stored in `hostTempo`/`hostBeatPosition` atomics (render→main thread). Used for drift correction and transport snap
 - **Drift correction:** `DSPKernel.computeDriftCorrection()` compares host beat position to nearest BPI multiple at each interval boundary. Only active when host BPM ≈ NINJAM BPM (within 0.5). Adjusts `correctedIntervalLength` by up to ±256 samples. Both IntervalBuffer and RemoteAudioMixer receive the corrected length
 - **Transport snap:** `DSPKernel.snapToBeatGridIfNeeded()` detects transport start (`transportMoving && !wasTransportMoving`), seek (beat position jump > 2× expected), and initial connect (`needsInitialSnap` flag). Snaps `samplePosition` in IntervalBuffer and RemoteAudioMixer to `(beatPos mod BPI) × samplesPerBeat`. Falls back to beat-position-change detection if `transportStateBlock` is nil. One-interval glitch at snap is acceptable — next boundary starts fresh

@@ -88,6 +88,15 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
 					self.attemptAutoConnect()
 				}
 			}
+
+			// Notify when host negotiates a different sample rate (e.g., DAW sample rate change)
+			audioUnit.onSampleRateChange = { [weak self] newRate in
+				guard let self else { return }
+				log.info("Host sample rate changed to \(newRate, privacy: .public) Hz")
+				if self.intervalBuffer != nil {
+					self.updateIntervalConfig()
+				}
+			}
 			
 			audioUnit.setupParameterTree(jamauv3ExtensionParameterSpecs.createAUParameterTree())
 			

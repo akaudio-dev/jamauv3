@@ -6,6 +6,7 @@
 //
 
 import AVFoundation
+import CoreAudio
 import os
 
 private let log = Logger(subsystem: "jamauv3.com.jamauv3Extension", category: "AudioUnit")
@@ -21,8 +22,39 @@ public class jamauv3ExtensionAudioUnit: AUAudioUnit, @unchecked Sendable
     private var _inputBusses: AUAudioUnitBusArray!
     private var _outputBusses: AUAudioUnitBusArray!
 
+    /// Track the last sample rate to detect changes across allocateRenderResources calls
+    private var lastSampleRate: Double = 0
+
+    /// Called when the host negotiates a different sample rate (e.g., user changes DAW sample rate)
+    var onSampleRateChange: ((Double) -> Void)?
+
+    /// Query the hardware output sample rate (cross-platform).
+    private static func hardwareSampleRate() -> Double {
+        #if os(iOS) || targetEnvironment(macCatalyst)
+        return AVAudioSession.sharedInstance().sampleRate
+        #else
+        var deviceID = AudioObjectID(0)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID)
+        guard status == noErr, deviceID != 0 else { return 0 }
+
+        var sampleRate: Float64 = 0
+        size = UInt32(MemoryLayout<Float64>.size)
+        address.mSelector = kAudioDevicePropertyNominalSampleRate
+        status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &sampleRate)
+        return status == noErr ? sampleRate : 0
+        #endif
+    }
+
     @objc override init(componentDescription: AudioComponentDescription, options: AudioComponentInstantiationOptions) throws {
-        let format = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+        let defaultRate = Self.hardwareSampleRate()
+        let format = AVAudioFormat(standardFormatWithSampleRate: defaultRate > 0 ? defaultRate : 48_000, channels: 2)!
+        log.info("init: defaultRate=\(defaultRate, privacy: .public) Hz")
         try super.init(componentDescription: componentDescription, options: options)
         outputBus = try AUAudioUnitBus(format: format)
         outputBus?.maximumChannelCount = 2
@@ -101,6 +133,14 @@ public class jamauv3ExtensionAudioUnit: AUAudioUnit, @unchecked Sendable
                          outputChannelCount: Int(outputChannelCount),
                          sampleRate: outFmt.sampleRate)
         renderProcessor?.setChannelCount(input: UInt32(inputChannelCount), output: UInt32(outputChannelCount))
+
+        // Detect sample rate change and notify listener
+        let newRate = outFmt.sampleRate
+        if lastSampleRate > 0 && newRate != lastSampleRate {
+            log.info("Sample rate changed: \(self.lastSampleRate, privacy: .public) → \(newRate, privacy: .public) Hz")
+            onSampleRateChange?(newRate)
+        }
+        lastSampleRate = newRate
 
         try super.allocateRenderResources()
     }

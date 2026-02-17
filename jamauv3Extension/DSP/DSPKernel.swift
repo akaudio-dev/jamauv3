@@ -81,8 +81,10 @@ final class DSPKernel: @unchecked Sendable {
     }
     
     func deInitialize() {
-        userPeakStorage.deallocate()
-        userPeakScratch.deallocate()
+        // Peak buffers are fixed-size (8 elements) and live for the kernel's lifetime.
+        // Do NOT deallocate here — deInitialize is called on every deallocateRenderResources,
+        // but the kernel persists (it's a `let` on the AU). Deallocating would create dangling
+        // pointers when the host re-allocates render resources (e.g., sample rate change).
     }
     
     // MARK: - Bypass
