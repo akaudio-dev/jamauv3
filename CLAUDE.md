@@ -120,9 +120,13 @@ User reports remote audio requires ~164% gain to match the passthrough signal le
 - Settings persistence (audio quality, latency compensation)
 - Error handling improvements (reconnect logic, timeout UX)
 
-### 3. Platform (Lower Priority)
+### 3. Discovery &amp; Listener Mode (Medium Priority)
+- **Public server browser:** GET `http://ninbot.com/app/servers.php` → JSON `{"servers":[{"name":"host:port","bpm":"120","bpi":"16","user_max":"8","stream":"http://...","users":[{"name":"...","co":"US","lat":"...","lon":"..."}]}]}`. Refresh every 60s (JamTaba's interval). Parse into a server list UI — name, BPM, BPI, user count.
+- **Listener mode:** Each server entry has an optional `stream` field — an Icecast/Shoutcast HTTP audio URL. Pass it to `AVPlayer` for zero-protocol listen-only mode (no NINJAM connection needed).
+- **World map:** `users[]` entries include `lat`/`lon` — can render connected users on a `MapKit` map, same as JamTaba.
+
+### 4. Platform (Lower Priority)
 - iOS/iPadOS build + testing
-- Standalone host app improvements
 - App Store preparation
 
 ## Key Facts
