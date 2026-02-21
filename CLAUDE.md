@@ -125,9 +125,61 @@ User reports remote audio requires ~164% gain to match the passthrough signal le
 - **Listener mode:** Each server entry has an optional `stream` field — an Icecast/Shoutcast HTTP audio URL. Pass it to `AVPlayer` for zero-protocol listen-only mode (no NINJAM connection needed).
 - **World map:** `users[]` entries include `lat`/`lon` — can render connected users on a `MapKit` map, same as JamTaba.
 
-### 4. Platform (Lower Priority)
-- iOS/iPadOS build + testing
-- App Store preparation
+### 4. iOS/iPadOS (Lower Priority)
+
+The project already declares `SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx"` and `TARGETED_DEVICE_FAMILY = "1,2,7"`. Platform-conditional code (`hardwareSampleRate`, `setSessionActive`, typealiases, `ViewControllerRepresentable`) is already correct. The following are the remaining blockers, in implementation order:
+
+#### CRITICAL — must fix before anything runs on iOS
+
+**a) `.loadOutOfProcess` fails on iOS** (`SimplePlayEngine.swift:86`)
+`AVAudioUnit.instantiate(options: .loadOutOfProcess)` silently fails on iOS (out-of-process AU is macOS-only). Host app will never load the AU; `ContentView` shows spinner forever.
+Fix: `#if os(macOS) let options = AudioComponentInstantiationOptions.loadOutOfProcess #else let options = AudioComponentInstantiationOptions() #endif`
+
+**b) Extension has no entitlements file — network blocked on iOS** (`project.pbxproj`)
+`ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES` is a macOS-only sandbox key; iOS ignores it. The extension has no `CODE_SIGN_ENTITLEMENTS` file at all. Since `.loadOutOfProcess` will be `[]` on iOS (in-process), the extension inherits the host app's network access — so this may be automatically resolved once (a) is fixed. Verify after fixing (a); if the TCP connection still fails, create `jamauv3Extension/jamauv3Extension.entitlements` with `com.apple.security.network.client = true` and wire `CODE_SIGN_ENTITLEMENTS` in both Debug+Release extension build configs.
+
+**c) Extension microphone entitlement missing** (`project.pbxproj` extension build configs, lines ~472 and ~524)
+`ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO` in the extension. Same in-process logic applies as (b): if loaded in-process the host app's mic permission covers it. Verify after (a). If mic capture still fails: set `ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = YES` and add `INFOPLIST_KEY_NSMicrophoneUsageDescription` to the extension's build settings.
+
+**d) No `AVAudioSession` setup in extension** (`AudioUnitViewController.swift` or `jamauv3ExtensionAudioUnit.swift:allocateRenderResources`)
+The extension process starts with `.soloAmbient` category on iOS — recording is disabled. Add in `AudioUnitViewController.viewDidLoad`:
+```swift
+#if os(iOS)
+let session = AVAudioSession.sharedInstance()
+try? session.setCategory(.playAndRecord, mode: .measurement, options: [.mixWithOthers, .allowBluetooth])
+try? session.setActive(true)
+#endif
+```
+`.measurement` mode disables system audio processing. `.mixWithOthers` prevents silencing the host DAW.
+
+#### IMPORTANT — needed for usable UI on iPhone
+
+**e) `preferredContentSize` not set** (`AudioUnitViewController.swift:viewDidLoad`)
+Without this, iOS hosts (GarageBand, AUM) may give the plugin a zero-size frame. Add:
+```swift
+preferredContentSize = CGSize(width: 320, height: 480)
+```
+
+**f) Gain slider layout too rigid for iPhone** (`ParameterSlider.swift`)
+`VerticalGainSlider` has hardcoded `frame(width: 30, height: 160)`. 8 sliders × 30pt = 240pt minimum — barely fits 320pt iPhone screen with no padding. Replace hardcoded height with a `GeometryReader`-proportional value, or wrap the slider row in a `ScrollView(.horizontal)`.
+
+#### MODERATE — polish
+
+**g) Deprecated `onChange` form** (`jamauv3ExtensionMainView.swift:168`)
+`.onChange(of: ninjamClient.chatMessages.count) { _ in` — single-closure form deprecated in iOS 17+. Update to two-parameter form: `.onChange(of: ninjamClient.chatMessages.count) { _, _ in }`.
+
+**h) Missing keyboard modifiers on connection fields** (`jamauv3ExtensionMainView.swift` connection sheet)
+Add to server field: `.keyboardType(.URL).autocorrectionDisabled()`. Port field: `.keyboardType(.numberPad)`. Username: `.textInputAutocapitalization(.never).autocorrectionDisabled()`.
+
+#### LOW — cleanup
+
+**i) Deprecated `inter-app-audio` entitlement** (`jamauv3.entitlements`)
+Remove `<key>inter-app-audio</key>` — deprecated since iOS 13, may cause App Store review friction.
+
+**j) `UserDefaults.standard` not shared across AU hosts** (`ConnectionSettings.swift:13`)
+Connection settings (server, port, user) saved to `UserDefaults.standard` are not visible when the plugin is loaded in a different host app (GarageBand vs AUM etc). If cross-host persistence is desired: add an App Group entitlement to both host and extension, configure a suite name, and use `UserDefaults(suiteName: "group.com.jamauv3")`.
+
+### 5. App Store preparation
 
 ## Key Facts
 - **NINJAM port:** 2049
