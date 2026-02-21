@@ -80,8 +80,8 @@ public class jamauv3ExtensionAudioUnit: AUAudioUnit, @unchecked Sendable
     
     public override var channelCapabilities: [NSNumber] {
         get {
-            // [-1, -1] means "any N-in, N-out where N matches" — maximum host flexibility
-            return [NSNumber(value: -1), NSNumber(value: -1)]
+            // Pairs: [in, out, in, out, ...] — support mono and stereo
+            return [1, 1, 1, 2, 2, 2]
         }
     }
     

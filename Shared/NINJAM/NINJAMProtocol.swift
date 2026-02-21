@@ -476,6 +476,7 @@ public struct ClientChatMessage {
         case message(String)           // MSG <text>
         case privateMessage(to: String, text: String)  // PRIVMSG <user> <text>
         case topic(String)             // TOPIC <text>
+        case admin(String)             // ADMIN <command> — slash-commands sent by admins
     }
 
     public let command: Command
@@ -506,6 +507,12 @@ public struct ClientChatMessage {
             data.append(Data("TOPIC".utf8))
             data.append(0)
             data.append(Data(text.utf8))
+            data.append(0)
+
+        case .admin(let command):
+            data.append(Data("ADMIN".utf8))
+            data.append(0)
+            data.append(Data(command.utf8))
             data.append(0)
         }
 

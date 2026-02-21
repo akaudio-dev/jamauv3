@@ -550,10 +550,15 @@ final class NINJAMClient: ObservableObject {
         logger.info("Sent channel info: \(channelsToSend.map { $0.name })")
     }
 
-    /// Send a chat message
+    /// Send a chat message. Text starting with '/' is sent as an ADMIN command.
     func sendChat(_ text: String) {
-        let chat = ClientChatMessage(command: .message(text))
-        send(data: chat.buildMessage())
+        let command: ClientChatMessage.Command
+        if text.hasPrefix("/") {
+            command = .admin(String(text.dropFirst()))
+        } else {
+            command = .message(text)
+        }
+        send(data: ClientChatMessage(command: command).buildMessage())
     }
 
     /// Send a private message

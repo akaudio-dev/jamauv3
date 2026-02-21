@@ -38,18 +38,6 @@ struct jamauv3ExtensionMainView: View {
 
                 Spacer()
 
-                // Host BPM (inline when connected)
-                if ninjamClient.isConnected && ninjamClient.hostBPM > 0 {
-                    Text("Host \(ninjamClient.hostBPM, specifier: "%.0f")")
-                        .font(.caption.monospacedDigit())
-                        .foregroundColor(.secondary)
-                    if ninjamClient.isBPMMismatch {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.caption2)
-                            .foregroundColor(.orange)
-                    }
-                }
-
                 if ninjamClient.isConnected {
                     Button(action: { ninjamClient.disconnect() }) {
                         Image(systemName: "network.slash")
@@ -71,21 +59,55 @@ struct jamauv3ExtensionMainView: View {
                 connectionSheet
             }
 
-            // Interval timing (compact)
+            // Interval timing
             if ninjamClient.isConnected && ninjamClient.bpm > 0 {
-                HStack(spacing: 6) {
-                    Text("\(ninjamClient.bpm)/\(ninjamClient.bpi)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundColor(.secondary)
+                VStack(spacing: 4) {
+                    HStack(alignment: .bottom, spacing: 0) {
+                        VStack(spacing: 0) {
+                            Text("\(ninjamClient.bpm)")
+                                .font(.title2.monospacedDigit().bold())
+                                .foregroundColor(ninjamClient.isBPMMismatch ? .orange : .primary)
+                            Text("BPM")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Text("·")
+                            .font(.title2)
+                            .foregroundColor(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.bottom, 14)
+
+                        VStack(spacing: 0) {
+                            Text("\(ninjamClient.bpi)")
+                                .font(.title2.monospacedDigit().bold())
+                            Text("BPI")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Spacer()
+
+                        Text("\(ninjamClient.currentBeat + 1)/\(ninjamClient.bpi)")
+                            .font(.title3.monospacedDigit().bold())
+                            .padding(.bottom, 14)
+                    }
 
                     ProgressView(value: ninjamClient.intervalProgress)
                         .tint(.green)
 
-                    Text("\(ninjamClient.currentBeat + 1)/\(ninjamClient.bpi)")
-                        .font(.caption.monospacedDigit().bold())
+                    if ninjamClient.isBPMMismatch && ninjamClient.hostBPM > 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                            Text("DAW tempo \(ninjamClient.hostBPM, specifier: "%.0f") BPM ≠ server \(ninjamClient.bpm) BPM")
+                        }
+                        .font(.caption2)
+                        .foregroundColor(.orange)
+                    }
                 }
                 .padding(.horizontal, 10)
-                .padding(.bottom, 4)
+                .padding(.top, 4)
+                .padding(.bottom, 6)
             }
 
             Divider()
