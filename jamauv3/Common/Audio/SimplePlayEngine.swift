@@ -60,7 +60,6 @@ public class SimplePlayEngine {
     private let midiOutBlock: AUMIDIOutputEventBlock = { _, _, _, _ in return noErr }
 
     public init() {
-        engine.prepare()
         setupMIDI()
     }
 
@@ -85,12 +84,16 @@ public class SimplePlayEngine {
             let audioUnit = try await AVAudioUnit.instantiate(
                 with: component.audioComponentDescription, options: .loadOutOfProcess)
             self.avAudioUnit = audioUnit
-            connect(audioUnit)
-            startPlaying()
             return await audioUnit.loadAudioUnitViewController()
         } catch {
             return nil
         }
+    }
+
+    func connectAndStart() {
+        guard let audioUnit = avAudioUnit else { return }
+        connect(audioUnit)
+        startPlaying()
     }
 
     // MARK: - Audio Graph

@@ -28,8 +28,11 @@ class AudioUnitHostModel {
             let viewController = await playEngine.initComponent(
                 type: "aumf", subType: "jmv3", manufacturer: "jmv3")
             self.viewModel = AudioUnitViewModel(
-                message: "Failed to load audio unit.",
-                viewController: viewController)
+                message: viewController == nil ? "Failed to load audio unit." : "",
+                viewController: viewController,
+                isLoaded: true)
+            // Start the audio engine after the UI is displayed
+            playEngine.connectAndStart()
         }
     }
 

@@ -15,4 +15,5 @@ struct AudioUnitViewModel {
     var title: String = "-"
     var message: String = "No Audio Unit loaded.."
     var viewController: ViewController?
+    var isLoaded: Bool = false
 }

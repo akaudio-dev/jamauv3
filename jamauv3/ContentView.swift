@@ -16,6 +16,10 @@ struct ContentView: View {
                 .frame(minWidth: 300, minHeight: 400)
         } else if let viewController = hostModel.viewModel.viewController {
             AUViewControllerUI(viewController: viewController)
+        } else if hostModel.viewModel.isLoaded {
+            Text(hostModel.viewModel.message)
+                .foregroundColor(.red)
+                .frame(minWidth: 300, minHeight: 400)
         } else {
             ProgressView("Loading…")
                 .frame(minWidth: 300, minHeight: 400)
