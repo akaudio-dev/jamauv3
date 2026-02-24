@@ -31,14 +31,13 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
     private let outputFormat: AudioStreamBasicDescription
     private let outputChannels: Int
 
-    // Packet buffer for AudioConverter's demand-driven callback
-    private var packetData = Data()
+    // Packet accumulation buffer — written directly by handlePackets, read by AudioConverter.
+    // Eliminates an intermediate Swift Data copy on every decode cycle.
+    private var inputDataBuffer: UnsafeMutableRawPointer?
+    private var inputDataBufferCapacity: Int = 0
+    private var inputDataWritePos: Int = 0
     private var packetDescriptions: [AudioStreamPacketDescription] = []
     private var packetOffset: Int = 0
-
-    // Stable buffer for input data — AudioConverter callback pointers must outlive the closure
-    private var inputDataBuffer: UnsafeMutableRawPointer?
-    private var inputDataBufferSize: Int = 0
     // Stable storage for the current packet description passed to AudioConverter
     private let inputPacketDesc: UnsafeMutablePointer<AudioStreamPacketDescription> = .allocate(capacity: 1)
 
@@ -52,6 +51,8 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
 
     // State tracking
     private let isRunning = Atomic<Bool>(false)
+    private let prebuffering = Atomic<Bool>(true)
+    private let prebufferThreshold: Int  // samples needed before playback starts/resumes
     private var formatDiscovered = false
 
     // Peak level (render thread writes, main thread reads via exchangePeak)
@@ -78,8 +79,10 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
             mBitsPerChannel: 32,
             mReserved: 0
         )
-        // ~2 seconds of stereo audio at the host sample rate
-        let capacity = Int(sampleRate * 2) * channels
+        // Match JamTaba's BUFFER_SIZE = 128000 for prebuffer threshold.
+        // Ring buffer holds ~4 seconds — well above the prebuffer watermark.
+        self.prebufferThreshold = 128000
+        let capacity = max(128000 * 2, Int(sampleRate * 4) * channels)
         self.ringBuffer = CircularBuffer(capacity: capacity)
         self.decodeScratch = .allocate(capacity: decodeScratchSize)
         self.readScratch = .allocate(capacity: readScratchSize)
@@ -99,6 +102,7 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
     func start(url: URL) {
         guard !isRunning.load(ordering: .acquiring) else { return }
         isRunning.store(true, ordering: .releasing)
+        prebuffering.store(true, ordering: .releasing)
         ringBuffer.reset()
         formatDiscovered = false
 
@@ -149,7 +153,7 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
             converter = nil
         }
 
-        packetData = Data()
+        inputDataWritePos = 0
         packetDescriptions = []
         packetOffset = 0
     }
@@ -160,7 +164,19 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
         guard isRunning.load(ordering: .relaxed) else { return }
 
         let available = ringBuffer.availableToRead
-        guard available > 0 else { return }
+
+        // Prebuffer watermark: wait until enough data accumulates before starting,
+        // and re-enter prebuffering on underrun to avoid rapid fill/drain glitches.
+        if prebuffering.load(ordering: .relaxed) {
+            if available >= prebufferThreshold {
+                prebuffering.store(false, ordering: .relaxed)
+            } else {
+                return  // Still filling — output silence
+            }
+        } else if available == 0 {
+            prebuffering.store(true, ordering: .relaxed)
+            return
+        }
 
         // Limit to scratch buffer size and available data
         let maxSamples = min(readScratchSize, available)
@@ -172,46 +188,10 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
         let framesRead = read / outputChannels
         guard framesRead > 0 else { return }
 
-        let bufferListPtr = UnsafeMutableAudioBufferListPointer(outputBufferList)
-        let outChannelCount = bufferListPtr.count
+        let peak = additiveMix(
+            source: readScratch, framesRead: framesRead, sourceChannels: outputChannels,
+            into: outputBufferList)
 
-        if outputChannels == 2 && outChannelCount >= 2 {
-            // Stereo → stereo: de-interleave and add
-            guard let outL = bufferListPtr[0].mData?.assumingMemoryBound(to: Float.self),
-                  let outR = bufferListPtr[1].mData?.assumingMemoryBound(to: Float.self) else { return }
-            for i in 0..<framesRead {
-                outL[i] += readScratch[i * 2]
-                outR[i] += readScratch[i * 2 + 1]
-            }
-        } else if outputChannels == 2 && outChannelCount == 1 {
-            // Stereo → mono: downmix and add
-            guard let out = bufferListPtr[0].mData?.assumingMemoryBound(to: Float.self) else { return }
-            for i in 0..<framesRead {
-                let mixed: Float = (readScratch[i * 2] + readScratch[i * 2 + 1]) * 0.5
-                out[i] += mixed
-            }
-        } else if outputChannels == 1 && outChannelCount >= 2 {
-            // Mono → stereo: duplicate to both channels
-            guard let outL = bufferListPtr[0].mData?.assumingMemoryBound(to: Float.self),
-                  let outR = bufferListPtr[1].mData?.assumingMemoryBound(to: Float.self) else { return }
-            for i in 0..<framesRead {
-                outL[i] += readScratch[i]
-                outR[i] += readScratch[i]
-            }
-        } else {
-            // Mono → mono
-            guard let out = bufferListPtr[0].mData?.assumingMemoryBound(to: Float.self) else { return }
-            for i in 0..<framesRead {
-                out[i] += readScratch[i]
-            }
-        }
-
-        // Track peak level for UI meter
-        var peak: Float = 0
-        for i in 0..<read {
-            let s = abs(readScratch[i])
-            if s > peak { peak = s }
-        }
         let peakBits = peak.bitPattern
         let currentBits = _peakLevel.load(ordering: .relaxed)
         if peakBits > currentBits {
@@ -258,46 +238,45 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
     ) {
         guard converter != nil, formatDiscovered else { return }
 
-        // Accumulate packet data and descriptions
-        let rawData = Data(bytes: data, count: Int(byteCount))
-
+        // Accumulate packet data directly into the raw inputDataBuffer,
+        // avoiding an intermediate Swift Data allocation + copy.
         for i in 0..<Int(packetCount) {
             guard let desc = descriptions?[i] else { continue }
             let start = Int(desc.mStartOffset)
             let size = Int(desc.mDataByteSize)
-            guard start >= 0, start + size <= rawData.count else { continue }
+            guard start >= 0, start + size <= Int(byteCount) else { continue }
 
-            let packetSlice = rawData[start..<(start + size)]
+            // Ensure raw buffer has capacity
+            let needed = inputDataWritePos + size
+            if needed > inputDataBufferCapacity {
+                let newCap = max(needed, inputDataBufferCapacity * 2, 4096)
+                let newBuf = UnsafeMutableRawPointer.allocate(byteCount: newCap, alignment: 1)
+                if let old = inputDataBuffer, inputDataWritePos > 0 {
+                    newBuf.copyMemory(from: old, byteCount: inputDataWritePos)
+                }
+                inputDataBuffer?.deallocate()
+                inputDataBuffer = newBuf
+                inputDataBufferCapacity = newCap
+            }
+
             let adjustedDesc = AudioStreamPacketDescription(
-                mStartOffset: Int64(packetData.count),
+                mStartOffset: Int64(inputDataWritePos),
                 mVariableFramesInPacket: desc.mVariableFramesInPacket,
                 mDataByteSize: desc.mDataByteSize
             )
-            packetData.append(packetSlice)
+            inputDataBuffer!.advanced(by: inputDataWritePos)
+                .copyMemory(from: data.advanced(by: start), byteCount: size)
+            inputDataWritePos += size
             packetDescriptions.append(adjustedDesc)
         }
 
-        // Decode accumulated packets
         decodeAccumulatedPackets()
     }
 
     private func decodeAccumulatedPackets() {
         guard let converter = self.converter, !packetDescriptions.isEmpty else { return }
 
-        // Copy packetData into a stable raw buffer so AudioConverter callback
-        // pointers remain valid (Data.withUnsafeBytes pointers are temporary).
-        let dataCount = packetData.count
-        if dataCount > inputDataBufferSize {
-            inputDataBuffer?.deallocate()
-            inputDataBuffer = .allocate(byteCount: dataCount, alignment: 1)
-            inputDataBufferSize = dataCount
-        }
-        packetData.withUnsafeBytes { rawBuf in
-            if let src = rawBuf.baseAddress {
-                inputDataBuffer!.copyMemory(from: src, byteCount: dataCount)
-            }
-        }
-
+        // Data already accumulated directly in inputDataBuffer — no copy needed.
         packetOffset = 0
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
 
@@ -334,9 +313,9 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
             }
         }
 
-        // Clear consumed data
-        packetData = Data()
-        packetDescriptions = []
+        // Reset for next batch (keep backing storage for reuse)
+        inputDataWritePos = 0
+        packetDescriptions.removeAll(keepingCapacity: true)
     }
 
     /// Called by AudioConverterFillComplexBuffer to pull input packets.
@@ -354,7 +333,7 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
         let start = Int(desc.mStartOffset)
         let size = Int(desc.mDataByteSize)
 
-        guard start >= 0, start + size <= inputDataBufferSize else {
+        guard start >= 0, start + size <= inputDataBufferCapacity else {
             ioNumberDataPackets.pointee = 0
             return icecastConverterNoDataErr
         }

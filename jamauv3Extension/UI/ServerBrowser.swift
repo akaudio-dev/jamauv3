@@ -185,7 +185,11 @@ final class ServerBrowserViewModel {
                 guard let self, let reader = self.icecastPeakReader else { continue }
                 let newPeak = reader()
                 let current = self.icecastPeakLevel
-                self.icecastPeakLevel = newPeak > current ? newPeak : current * 0.85
+                let updated = newPeak > current ? newPeak : current * 0.85
+                // Only assign when visually meaningful to avoid @Observable invalidations
+                if abs(updated - current) > 0.01 {
+                    self.icecastPeakLevel = updated
+                }
             }
         }
     }

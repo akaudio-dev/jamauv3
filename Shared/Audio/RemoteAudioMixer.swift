@@ -462,15 +462,6 @@ final class RemoteAudioMixer: @unchecked Sendable {
         pos = (pos + frameCount) % intervalLength
         samplePosition.store(pos, ordering: .releasing)
 
-        // Get output buffer pointers
-        let outputBuffers = UnsafeMutableAudioBufferListPointer(outputBufferList)
-        guard outputBuffers.count >= 1 else { return }
-
-        let outputL = outputBuffers[0].mData?.assumingMemoryBound(to: Float.self)
-        let outputR = outputBuffers.count >= 2 ? outputBuffers[1].mData?.assumingMemoryBound(to: Float.self) : nil
-
-        guard let outL = outputL else { return }
-
         // Mix each active channel
         for channel in renderChannels {
             guard let buffer = channel.currentBuffer else { continue }
@@ -487,33 +478,12 @@ final class RemoteAudioMixer: @unchecked Sendable {
 
             samplesMixedCount.wrappingAdd(framesRead, ordering: .relaxed)
 
-            var peak: Float = 0
-            if ch >= 2 {
-                // Stereo: deinterleave and mix L→L, R→R
-                for i in 0..<framesRead {
-                    let sL = temp[i * 2] * gain
-                    let sR = temp[i * 2 + 1] * gain
-                    let s = max(abs(sL), abs(sR))
-                    if s > peak { peak = s }
-                    outL[i] += sL
-                    outputR?[i] += sR
-                }
-            } else {
-                // Mono: duplicate to both channels
-                for i in 0..<framesRead {
-                    let sample = temp[i] * gain
-                    let s = abs(sample)
-                    if s > peak { peak = s }
-                    outL[i] += sample
-                    outputR?[i] += sample
-                }
-            }
+            let peak = additiveMix(
+                source: temp, framesRead: framesRead, sourceChannels: ch,
+                into: outputBufferList, gain: gain)
 
-            // Store peak for this slot (max-accumulate into caller's buffer)
-            if let outPeaks, slot < 8 {
-                if peak > outPeaks[slot] {
-                    outPeaks[slot] = peak
-                }
+            if let outPeaks, slot < 8, peak > outPeaks[slot] {
+                outPeaks[slot] = peak
             }
         }
     }
@@ -528,4 +498,70 @@ final class RemoteAudioMixer: @unchecked Sendable {
         }
     }
 
+}
+
+// MARK: - Shared Mixing Utility
+
+/// Additively mix interleaved source samples into an AudioBufferList,
+/// handling all channel format combinations (stereo↔mono).
+/// Returns the peak amplitude of the mixed signal (post-gain).
+/// RT-safe: no allocations, no locks.
+@inline(__always)
+func additiveMix(
+    source: UnsafePointer<Float>,
+    framesRead: Int,
+    sourceChannels: Int,
+    into outputBufferList: UnsafeMutablePointer<AudioBufferList>,
+    gain: Float = 1.0
+) -> Float {
+    let buffers = UnsafeMutableAudioBufferListPointer(outputBufferList)
+    guard buffers.count >= 1,
+          let outL = buffers[0].mData?.assumingMemoryBound(to: Float.self) else { return 0 }
+    let outR = buffers.count >= 2 ? buffers[1].mData?.assumingMemoryBound(to: Float.self) : nil
+
+    var peak: Float = 0
+
+    if sourceChannels >= 2 {
+        if let outR {
+            // Stereo → stereo: deinterleave and add
+            for i in 0..<framesRead {
+                let sL = source[i * 2] * gain
+                let sR = source[i * 2 + 1] * gain
+                outL[i] += sL
+                outR[i] += sR
+                let s = max(abs(sL), abs(sR))
+                if s > peak { peak = s }
+            }
+        } else {
+            // Stereo → mono: downmix and add
+            for i in 0..<framesRead {
+                let sL = source[i * 2] * gain
+                let sR = source[i * 2 + 1] * gain
+                outL[i] += (sL + sR) * 0.5
+                let s = max(abs(sL), abs(sR))
+                if s > peak { peak = s }
+            }
+        }
+    } else {
+        if let outR {
+            // Mono → stereo: duplicate to both channels
+            for i in 0..<framesRead {
+                let sample = source[i] * gain
+                outL[i] += sample
+                outR[i] += sample
+                let s = abs(sample)
+                if s > peak { peak = s }
+            }
+        } else {
+            // Mono → mono
+            for i in 0..<framesRead {
+                let sample = source[i] * gain
+                outL[i] += sample
+                let s = abs(sample)
+                if s > peak { peak = s }
+            }
+        }
+    }
+
+    return peak
 }
