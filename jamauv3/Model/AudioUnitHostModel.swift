@@ -13,13 +13,8 @@ import AVFAudio
 class AudioUnitHostModel {
     private let playEngine = SimplePlayEngine()
     var viewModel = AudioUnitViewModel()
-    var audioUnitCrashed = false
-
-    private let instanceInvalidationNotification = Notification.Name(
-        String(kAudioComponentInstanceInvalidationNotification))
 
     init() {
-        setupNotifications()
         loadAudioUnit()
     }
 
@@ -34,20 +29,5 @@ class AudioUnitHostModel {
             // Start the audio engine after the UI is displayed
             playEngine.connectAndStart()
         }
-    }
-
-    private func setupNotifications() {
-        NotificationCenter.default.addObserver(
-            forName: instanceInvalidationNotification, object: nil, queue: nil
-        ) { [weak self] notification in
-            guard let self else { return }
-            if notification.object is AUAudioUnit {
-                Task { @MainActor in self.audioUnitCrashed = true }
-            }
-        }
-    }
-
-    deinit {
-        NotificationCenter.default.removeObserver(self, name: instanceInvalidationNotification, object: nil)
     }
 }

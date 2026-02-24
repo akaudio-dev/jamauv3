@@ -15,5 +15,13 @@ struct jamauv3App: App {
         WindowGroup {
             ContentView(hostModel: hostModel)
         }
+        .commands {
+            CommandGroup(before: .appTermination) {
+                Button("Close") {
+                    NSApplication.shared.terminate(nil)
+                }
+                .keyboardShortcut("w", modifiers: .control)
+            }
+        }
     }
 }

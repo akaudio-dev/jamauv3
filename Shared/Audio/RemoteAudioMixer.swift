@@ -174,7 +174,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
         decodeThread = thread
         thread.start()
 
-        logger.info("RemoteAudioMixer started")
+        logger.debug("RemoteAudioMixer started")
     }
 
     func stop() {
@@ -196,7 +196,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
             tempBufferSize = 0
         }
 
-        logger.info("RemoteAudioMixer stopped")
+        logger.debug("RemoteAudioMixer stopped")
     }
 
     /// Returns an array of 8 usernames indexed by slot. Called from main thread only.
@@ -292,7 +292,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
                 for (_, state) in channelStates where state.channelKey.username == username {
                     state.gainSlot.store(-1, ordering: .releasing)
                 }
-                // logger.info("updateUserInfo: freed slot \(slot) for \(username)")
+                // logger.debug("updateUserInfo: freed slot \(slot) for \(username)")
             }
         }
 
@@ -305,7 +305,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
                     for (_, state) in channelStates where state.channelKey.username == username {
                         state.gainSlot.store(freeSlot, ordering: .releasing)
                     }
-                    // logger.info("updateUserInfo: assigned slot \(freeSlot) to \(username)")
+                    // logger.debug("updateUserInfo: assigned slot \(freeSlot) to \(username)")
                 } else {
                     // logger.warning("updateUserInfo: no free slots for \(username)")
                 }

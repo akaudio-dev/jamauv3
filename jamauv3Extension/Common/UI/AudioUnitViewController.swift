@@ -19,8 +19,6 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
     
     var hostingController: HostingController<jamauv3ExtensionMainView>?
     
-    private var observation: NSKeyValueObservation?
-    
     private let connectionSettings = ConnectionSettings()
     private let ninjamClient = NINJAMClient()
     private var intervalBuffer: IntervalBuffer?
@@ -100,10 +98,10 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
 			
 			audioUnit.setupParameterTree(jamauv3ExtensionParameterSpecs.createAUParameterTree())
 			
-			self.observation = audioUnit.observe(\.allParameterValues, options: [.new]) { object, change in
-				guard let tree = audioUnit.parameterTree else { return }
-				
-				// This insures the Audio Unit gets initial values from the host.
+			// One-time sync: ensure AU has initial values from the host.
+			// Do NOT use persistent KVO on allParameterValues — it fires on every
+			// parameter change, flooding XPC with >32 Hz messages in out-of-process AU.
+			if let tree = audioUnit.parameterTree {
 				for param in tree.allParameters { param.value = param.value }
 			}
 			
@@ -232,7 +230,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
                     correctedLen = kernel.correctedIntervalLength.load(ordering: .relaxed)
                 }
 
-                log.info("Mixer stats: decodes=\(decodes) swaps=\(swaps) mixed=\(mixed) mixCalls=\(mixCalls) inPeak=\(inputPeakStr, privacy: .public) outPeak=\(outputPeakStr, privacy: .public) hostBPM=\(String(format: "%.1f", hostTempoVal), privacy: .public) correctedInterval=\(correctedLen)")
+                log.debug("Mixer stats: decodes=\(decodes) swaps=\(swaps) mixed=\(mixed) mixCalls=\(mixCalls) inPeak=\(inputPeakStr, privacy: .public) outPeak=\(outputPeakStr, privacy: .public) hostBPM=\(String(format: "%.1f", hostTempoVal), privacy: .public) correctedInterval=\(correctedLen)")
             }
         }
     }
@@ -241,16 +239,31 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         meterTask?.cancel()
         meterTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(66))  // ~15 Hz
+                try? await Task.sleep(for: .milliseconds(200))  // ~5 Hz
                 guard let self,
                       let kernel = (self.audioUnit as? jamauv3ExtensionAudioUnit)?.kernel,
                       let mixer = self.remoteAudioMixer else { continue }
+
+                // Build new peaks array locally, assign once to trigger single objectWillChange
+                var newPeaks = self.ninjamClient.userPeaks
+                var peaksChanged = false
                 for i in 0..<8 {
                     let peak = kernel.exchangeUserPeak(slot: i)
-                    let current = self.ninjamClient.userPeaks[i]
-                    self.ninjamClient.userPeaks[i] = peak > current ? peak : current * 0.85
+                    let current = newPeaks[i]
+                    let updated = peak > current ? peak : current * 0.85
+                    if abs(updated - current) > 0.005 {
+                        newPeaks[i] = updated
+                        peaksChanged = true
+                    }
                 }
-                self.ninjamClient.slotUsernames = mixer.slotUsernames()
+                if peaksChanged {
+                    self.ninjamClient.userPeaks = newPeaks
+                }
+
+                let newUsernames = mixer.slotUsernames()
+                if newUsernames != self.ninjamClient.slotUsernames {
+                    self.ninjamClient.slotUsernames = newUsernames
+                }
             }
         }
     }

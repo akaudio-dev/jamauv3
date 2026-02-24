@@ -4,6 +4,7 @@
 //
 
 import Foundation
+import CoreAudio
 import CoreAudioKit
 import AVFoundation
 @preconcurrency import AVFAudio
@@ -63,6 +64,38 @@ public class SimplePlayEngine {
         setupMIDI()
     }
 
+    /// Check if the system has an audio input device before accessing engine.inputNode.
+    private static func hasAudioInput() -> Bool {
+        #if os(iOS) || os(visionOS)
+        return AVAudioSession.sharedInstance().isInputAvailable
+        #else
+        return hasAudioDevice(selector: kAudioHardwarePropertyDefaultInputDevice)
+        #endif
+    }
+
+    /// Check if the system has an audio output device.
+    private static func hasAudioOutput() -> Bool {
+        #if os(iOS) || os(visionOS)
+        return true  // iOS always has output
+        #else
+        return hasAudioDevice(selector: kAudioHardwarePropertyDefaultOutputDevice)
+        #endif
+    }
+
+    #if os(macOS)
+    private static func hasAudioDevice(selector: AudioObjectPropertySelector) -> Bool {
+        var deviceID = AudioObjectID(0)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        let status = AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID)
+        return status == noErr && deviceID != 0 && deviceID != kAudioObjectUnknown
+    }
+    #endif
+
     private func setupMIDI() {
         MIDIManager.shared.setupPort(midiProtocol: MIDIProtocolID._2_0, receiveBlock: { [weak self] eventList, _ in
             guard let self else { return }
@@ -81,8 +114,11 @@ public class SimplePlayEngine {
         }
 
         do {
+            // Load in-process for the test host app — avoids XPC rate-limit noise
+            // and the NSRemoteView overhead of out-of-process hosting.
+            // Real DAW hosts will load out-of-process with their own sandboxing.
             let audioUnit = try await AVAudioUnit.instantiate(
-                with: component.audioComponentDescription, options: .loadOutOfProcess)
+                with: component.audioComponentDescription, options: .loadInProcess)
             self.avAudioUnit = audioUnit
             return await audioUnit.loadAudioUnitViewController()
         } catch {
@@ -92,6 +128,9 @@ public class SimplePlayEngine {
 
     func connectAndStart() {
         guard let audioUnit = avAudioUnit else { return }
+        // Skip audio engine on machines without output device (e.g. headless/remote Mac).
+        // The UI still works — just no audio processing.
+        guard Self.hasAudioOutput() else { return }
         connect(audioUnit)
         startPlaying()
     }
@@ -102,7 +141,7 @@ public class SimplePlayEngine {
     private func connect(_ audioUnit: AVAudioUnit) {
         engine.attach(audioUnit)
 
-        if audioUnit.wantsAudioInput {
+        if audioUnit.wantsAudioInput && Self.hasAudioInput() {
             let inputFormat = engine.inputNode.outputFormat(forBus: 0)
             engine.connect(engine.inputNode, to: audioUnit, format: inputFormat)
             engine.connect(audioUnit, to: engine.mainMixerNode, format: inputFormat)

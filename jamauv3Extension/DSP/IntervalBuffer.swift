@@ -118,7 +118,7 @@ final class IntervalBuffer: @unchecked Sendable {
         encodingThread = thread
         thread.start()
 
-        logger.info("IntervalBuffer started")
+        logger.debug("IntervalBuffer started")
     }
 
     /// Stop capturing and encoding. Finalizes current interval.
@@ -136,7 +136,7 @@ final class IntervalBuffer: @unchecked Sendable {
         encodingThread = nil
 
         currentEncoder = nil
-        logger.info("IntervalBuffer stopped")
+        logger.debug("IntervalBuffer stopped")
     }
 
     /// Update interval configuration (called from main thread on BPM/BPI change)

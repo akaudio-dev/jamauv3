@@ -13,13 +13,61 @@ struct jamauv3ExtensionMainView: View {
     @ObservedObject var connectionSettings: ConnectionSettings
     @ObservedObject var ninjamClient: NINJAMClient
 
-    @State private var showingConnectionSheet = false
+    enum ActiveSheet: Identifiable {
+        case connection, serverBrowser
+        var id: Self { self }
+    }
+
+    @State private var activeSheet: ActiveSheet?
     @State private var chatInput = ""
 
     var body: some View {
+        ZStack {
+            // Main content
+            mainContent
+
+            // Inline overlays (sheets don't work in out-of-process AUv3)
+            if activeSheet == .connection {
+                connectionOverlay
+            } else if activeSheet == .serverBrowser {
+                ServerBrowserView(
+                    connectionSettings: connectionSettings,
+                    onSelectServer: { server in
+                        connectionSettings.serverName = server.host
+                        connectionSettings.port = server.port
+                        activeSheet = .connection
+                    },
+                    onDismiss: {
+                        activeSheet = nil
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(nsColor: .windowBackgroundColor))
+            }
+        }
+        .frame(minWidth: 300, minHeight: 400)
+    }
+
+    private var mainContent: some View {
         VStack(spacing: 0) {
-            // Connection status bar
+            // Top bar: (BPM/BPI)(progress)(beat/bpi) ... (connection)(button)
             HStack(spacing: 6) {
+                if ninjamClient.isConnected && ninjamClient.bpm > 0 {
+                    Text("\(ninjamClient.bpm)/\(ninjamClient.bpi)")
+                        .font(.caption.monospacedDigit().bold())
+                        .foregroundColor(ninjamClient.isBPMMismatch ? .orange : .primary)
+                        .fixedSize()
+
+                    ProgressView(value: ninjamClient.intervalProgress)
+                        .tint(.green)
+
+                    Text("\(ninjamClient.currentBeat + 1)/\(ninjamClient.bpi)")
+                        .font(.caption.monospacedDigit().bold())
+                        .fixedSize()
+                }
+
+                Spacer(minLength: 8)
+
                 Circle()
                     .fill(ninjamClient.isConnected ? Color.green : Color.gray)
                     .frame(width: 8, height: 8)
@@ -27,18 +75,7 @@ struct jamauv3ExtensionMainView: View {
                 if ninjamClient.isConnected {
                     Text("\(connectionSettings.serverName):\(connectionSettings.port)")
                         .font(.caption)
-                    Text("(\(connectionSettings.username))")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } else {
-                    Text(ninjamClient.connectionStatus)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-
-                Spacer()
-
-                if ninjamClient.isConnected {
+                        .lineLimit(1)
                     Button(action: { ninjamClient.disconnect() }) {
                         Image(systemName: "network.slash")
                             .font(.caption)
@@ -46,7 +83,16 @@ struct jamauv3ExtensionMainView: View {
                     }
                     .buttonStyle(.borderless)
                 } else {
-                    Button(action: { showingConnectionSheet = true }) {
+                    Text(ninjamClient.connectionStatus)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                    Button(action: { activeSheet = .serverBrowser }) {
+                        Image(systemName: "globe")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    Button(action: { activeSheet = .connection }) {
                         Image(systemName: "network.badge.shield.half.filled")
                             .font(.caption)
                     }
@@ -55,59 +101,17 @@ struct jamauv3ExtensionMainView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .sheet(isPresented: $showingConnectionSheet) {
-                connectionSheet
-            }
 
-            // Interval timing
-            if ninjamClient.isConnected && ninjamClient.bpm > 0 {
-                VStack(spacing: 4) {
-                    HStack(alignment: .bottom, spacing: 0) {
-                        VStack(spacing: 0) {
-                            Text("\(ninjamClient.bpm)")
-                                .font(.title2.monospacedDigit().bold())
-                                .foregroundColor(ninjamClient.isBPMMismatch ? .orange : .primary)
-                            Text("BPM")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-
-                        Text("·")
-                            .font(.title2)
-                            .foregroundColor(.secondary)
-                            .padding(.horizontal, 8)
-                            .padding(.bottom, 14)
-
-                        VStack(spacing: 0) {
-                            Text("\(ninjamClient.bpi)")
-                                .font(.title2.monospacedDigit().bold())
-                            Text("BPI")
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-
-                        Spacer()
-
-                        Text("\(ninjamClient.currentBeat + 1)/\(ninjamClient.bpi)")
-                            .font(.title3.monospacedDigit().bold())
-                            .padding(.bottom, 14)
-                    }
-
-                    ProgressView(value: ninjamClient.intervalProgress)
-                        .tint(.green)
-
-                    if ninjamClient.isBPMMismatch && ninjamClient.hostBPM > 0 {
-                        HStack(spacing: 4) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                            Text("DAW tempo \(ninjamClient.hostBPM, specifier: "%.0f") BPM ≠ server \(ninjamClient.bpm) BPM")
-                        }
-                        .font(.caption2)
-                        .foregroundColor(.orange)
-                    }
+            // BPM mismatch warning
+            if ninjamClient.isBPMMismatch && ninjamClient.hostBPM > 0 {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                    Text("DAW tempo \(ninjamClient.hostBPM, specifier: "%.0f") BPM ≠ server \(ninjamClient.bpm) BPM")
                 }
+                .font(.caption2)
+                .foregroundColor(.orange)
                 .padding(.horizontal, 10)
-                .padding(.top, 4)
-                .padding(.bottom, 6)
+                .padding(.bottom, 4)
             }
 
             Divider()
@@ -132,7 +136,6 @@ struct jamauv3ExtensionMainView: View {
             .padding(.vertical, 6)
             .padding(.horizontal, 4)
         }
-        .frame(minWidth: 300, minHeight: 400)
     }
 
     // MARK: - Chat Terminal
@@ -196,57 +199,62 @@ struct jamauv3ExtensionMainView: View {
         }
     }
 
-    // MARK: - Connection Sheet
+    // MARK: - Connection Overlay
 
-    private var connectionSheet: some View {
-        VStack(spacing: 16) {
-            Text("Connect to Server")
-                .font(.headline)
-                .padding(.top)
+    private var connectionOverlay: some View {
+        VStack {
+            Spacer()
+            VStack(spacing: 16) {
+                Text("Connect to Server")
+                    .font(.headline)
+                    .padding(.top)
 
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 8) {
-                    TextField("Server", text: $connectionSettings.serverName)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("Port", text: $connectionSettings.port)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 80)
-                }
-
-                TextField("Username", text: $connectionSettings.username)
-                    .textFieldStyle(.roundedBorder)
-
-                SecureField("Password", text: $connectionSettings.password)
-                    .textFieldStyle(.roundedBorder)
-
-                Toggle("Stereo", isOn: $connectionSettings.stereo)
-            }
-
-            if let error = ninjamClient.lastError {
-                Text(error)
-                    .font(.caption)
-                    .foregroundColor(.red)
-            }
-
-            HStack(spacing: 12) {
-                Button("Cancel") {
-                    showingConnectionSheet = false
-                }
-                .buttonStyle(.bordered)
-
-                Button(action: handleConnectionToggle) {
-                    HStack {
-                        Image(systemName: "network")
-                        Text("Connect")
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 8) {
+                        TextField("Server", text: $connectionSettings.serverName)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("Port", text: $connectionSettings.port)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 80)
                     }
+
+                    TextField("Username", text: $connectionSettings.username)
+                        .textFieldStyle(.roundedBorder)
+
+                    SecureField("Password", text: $connectionSettings.password)
+                        .textFieldStyle(.roundedBorder)
+
+                    Toggle("Stereo", isOn: $connectionSettings.stereo)
                 }
-                .buttonStyle(.borderedProminent)
+
+                if let error = ninjamClient.lastError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+
+                HStack(spacing: 12) {
+                    Button("Cancel") {
+                        activeSheet = nil
+                    }
+                    .buttonStyle(.bordered)
+
+                    Button(action: handleConnectionToggle) {
+                        HStack {
+                            Image(systemName: "network")
+                            Text("Connect")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .padding(.bottom)
             }
-            .padding(.bottom)
+            .padding(.horizontal)
+            .frame(maxWidth: 360)
+            Spacer()
         }
-        .padding(.horizontal)
-        .frame(minWidth: 320)
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 
     // MARK: - Helpers
@@ -292,7 +300,7 @@ struct jamauv3ExtensionMainView: View {
                 username: connectionSettings.username,
                 password: connectionSettings.password
             )
-            showingConnectionSheet = false
+            activeSheet = nil
         }
     }
 }

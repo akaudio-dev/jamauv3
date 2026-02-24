@@ -229,7 +229,7 @@ final class NINJAMClient: ObservableObject {
     private func handleConnectionStateChange(_ newState: NWConnection.State) {
         switch newState {
         case .ready:
-            logger.info("TCP connection established")
+            logger.debug("TCP connection established")
             setState(.awaitingChallenge)
             startReceiving()
 
@@ -238,7 +238,7 @@ final class NINJAMClient: ObservableObject {
             setState(.error("Connection failed: \(error.localizedDescription)"))
 
         case .cancelled:
-            logger.info("Connection cancelled")
+            logger.debug("Connection cancelled")
             setState(.disconnected)
 
         case .waiting(let error):
@@ -273,7 +273,7 @@ final class NINJAMClient: ObservableObject {
 
             if isComplete {
                 Task { @MainActor in
-                    self.logger.info("Connection closed by server")
+                    self.logger.debug("Connection closed by server")
                     self.setState(.disconnected)
                 }
             } else {
@@ -384,7 +384,7 @@ final class NINJAMClient: ObservableObject {
         setState(.authenticating)
         send(data: authUser.buildMessage())
 
-        logger.info("Sent auth response for user: \(username)")
+        logger.debug("Sent auth response for user: \(username)")
     }
 
     private func handleAuthReply(_ payload: Data) {
@@ -401,11 +401,11 @@ final class NINJAMClient: ObservableObject {
             }
 
             if let effectiveUsername = reply.effectiveUsername {
-                logger.info("Server assigned username: \(effectiveUsername)")
+                logger.debug("Server assigned username: \(effectiveUsername)")
             }
 
             setState(.connected)
-            logger.info("Authentication successful!")
+            logger.debug("Authentication successful!")
 
             // Send our channel info
             sendChannelInfo()
@@ -432,7 +432,7 @@ final class NINJAMClient: ObservableObject {
         bpm = newBpm
         bpi = newBpi
 
-        logger.info("Config: BPM=\(config.beatsPerMinute), BPI=\(config.beatsPerInterval), interval=\(config.intervalDuration)s")
+        logger.debug("Config: BPM=\(config.beatsPerMinute), BPI=\(config.beatsPerInterval), interval=\(config.intervalDuration)s")
 
         startIntervalTimer()
         delegate?.client(self, didReceiveConfig: newBpm, bpi: newBpi)
@@ -444,7 +444,7 @@ final class NINJAMClient: ObservableObject {
             return
         }
 
-        logger.info("User info update: \(userInfo.channels.count) channels")
+        logger.debug("User info update: \(userInfo.channels.count) channels")
         for channel in userInfo.channels {
             logger.debug("  \(channel.username)/\(channel.channelName) active=\(channel.isActive)")
         }
@@ -473,7 +473,7 @@ final class NINJAMClient: ObservableObject {
         let userMask = ClientSetUserMask(subscriptions: subscriptions)
         send(data: userMask.buildMessage())
 
-        logger.info("Subscribed to \(subscriptions.count) users: \(subscriptions.map { "\($0.username)(0x\(String($0.channelMask, radix: 16)))" }.joined(separator: ", "))")
+        logger.debug("Subscribed to \(subscriptions.count) users: \(subscriptions.map { "\($0.username)(0x\(String($0.channelMask, radix: 16)))" }.joined(separator: ", "))")
     }
 
     private func handleDownloadIntervalBegin(_ payload: Data) {
@@ -504,15 +504,15 @@ final class NINJAMClient: ObservableObject {
 
         switch chat.messageType {
         case .message(let from, let text):
-            logger.info("Chat from \(from): \(text)")
+            logger.debug("Chat from \(from): \(text)")
         case .privateMessage(let from, let text):
-            logger.info("PM from \(from): \(text)")
+            logger.debug("PM from \(from): \(text)")
         case .topicChange(let topic):
-            logger.info("Topic: \(topic)")
+            logger.debug("Topic: \(topic)")
         case .join(let username):
-            logger.info("\(username) joined")
+            logger.debug("\(username) joined")
         case .part(let username):
-            logger.info("\(username) left")
+            logger.debug("\(username) left")
         case .unknown(let params):
             logger.debug("Unknown chat: \(params)")
         }
@@ -547,7 +547,7 @@ final class NINJAMClient: ObservableObject {
         let channelInfo = ClientSetChannelInfo(channels: channelsToSend)
         send(data: channelInfo.buildMessage())
 
-        logger.info("Sent channel info: \(channelsToSend.map { $0.name })")
+        logger.debug("Sent channel info: \(channelsToSend.map { $0.name })")
     }
 
     /// Send a chat message. Text starting with '/' is sent as an ADMIN command.
@@ -623,8 +623,8 @@ final class NINJAMClient: ObservableObject {
         currentBeat = 0
         intervalProgress = 0.0
 
-        // ~30 Hz update rate for smooth progress bar
-        intervalTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+        // ~5 Hz — smooth for progress bar, combined with meter timer stays under XPC 32 Hz limit
+        intervalTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             self?.updateIntervalProgress()
         }
     }
@@ -655,8 +655,15 @@ final class NINJAMClient: ObservableObject {
         let progress = elapsedInInterval / intervalDuration
         let beat = Int(progress * Double(bpi))
 
-        intervalProgress = progress
-        currentBeat = beat
+        // Only publish when values actually change to avoid XPC rate-limiting
+        if beat != currentBeat {
+            currentBeat = beat
+        }
+        // Quantize progress to ~100 steps to reduce update frequency
+        let quantized = (progress * 100).rounded() / 100
+        if quantized != (intervalProgress * 100).rounded() / 100 {
+            intervalProgress = quantized
+        }
     }
 
     // MARK: - Chat / HUD

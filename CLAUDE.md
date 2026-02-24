@@ -49,6 +49,12 @@
 - ✅ **Memory leak fix**: stale GUID eviction in RemoteAudioMixer prevents unbounded activeDownloads growth
 - ✅ **Per-user level meters**: 4px green/red peak meters next to each gain slider, ~15 Hz update with exponential decay, real usernames from server replace "User N" labels. Peaks measured in `mixInto()` (post-gain), collected via DSPKernel-owned scratch buffer, published to atomic storage after render callback — ensures meters are tied to actual output timing
 - ✅ **Dynamic host audio format**: AU declares default format matching hardware sample rate (CoreAudio on macOS, AVAudioSession on iOS). Detects sample rate changes across `allocateRenderResources` cycles and reconfigures IntervalBuffer + RemoteAudioMixer. Peak buffers survive dealloc/realloc cycles
+- ✅ **Compact top bar UI**: single horizontal strip — `(BPM/BPI)(progress bar)(beat/bpi) ... (● server:port)(disconnect)` when connected, `(○ status)(browse)(connect)` when disconnected. Saves vertical space vs the old stacked layout
+- ✅ **Server browser**: fetches public server list from `ninbot.com/app/servers.php`, auto-refreshes every 60s. Shows server name, BPM, BPI, user count, connected usernames. Sorted by user count then priority. Server selection populates connection dialog. File: `jamauv3Extension/UI/ServerBrowser.swift`
+- ✅ **Connection overlay**: replaced `.sheet` with inline ZStack overlay (sheets don't work in out-of-process AUv3)
+- ✅ **XPC rate-limit fixes**: reduced interval timer from 30 Hz → 5 Hz, meter timer from 15 Hz → 5 Hz, quantized progress updates, batched peak/username publishes, removed persistent KVO on `allParameterValues`, removed debug print in parameter setter. Prevents XPC throttling in out-of-process AU
+- ✅ **Host app improvements**: loads AU in-process (`.loadInProcess` — avoids XPC overhead for test host), Ctrl+W close shortcut, audio device checks (skip engine on headless Mac, skip input node if no mic), removed crash observer boilerplate
+- ✅ **Log level cleanup**: routine protocol/connection messages demoted from `.info` to `.debug` to reduce noise
 - ✅ Tests: protocol parsing, E2E auth, OGG encode/decode, interval serialization, remote mixer, memory leak detection, **level preservation** (66 tests pass). Memory leak tests use TSan-aware thresholds (`memoryThresholdMultiplier` in TestHelpers.swift) — pass with both `-enableThreadSanitizer YES` and without
 
 ### Interval Buffer Architecture (Upload)
@@ -121,9 +127,26 @@ User reports remote audio requires ~164% gain to match the passthrough signal le
 - Error handling improvements (reconnect logic, timeout UX)
 
 ### 3. Discovery &amp; Listener Mode (Medium Priority)
-- **Public server browser:** GET `http://ninbot.com/app/servers.php` → JSON `{"servers":[{"name":"host:port","bpm":"120","bpi":"16","user_max":"8","stream":"http://...","users":[{"name":"...","co":"US","lat":"...","lon":"..."}]}]}`. Refresh every 60s (JamTaba's interval). Parse into a server list UI — name, BPM, BPI, user count.
-- **Listener mode:** Each server entry has an optional `stream` field — an Icecast/Shoutcast HTTP audio URL. Pass it to `AVPlayer` for zero-protocol listen-only mode (no NINJAM connection needed).
+- **Public server browser:** ✅ Done. GET `https://ninbot.com/app/servers.php` → JSON. Auto-refresh 60s. Sorted by user count. Server selection pre-fills connection dialog.
+- **Listener mode:** Server entries have optional `stream`/`ssl_stream` fields — Icecast/Shoutcast MP3 audio URLs. **AVPlayer cannot work** in out-of-process AUv3 (extension process has no audio output device — audio queue decodes correctly but output goes nowhere). Must use manual decode-and-mix pipeline routed through the AU render callback. See planned architecture below.
 - **World map:** `users[]` entries include `lat`/`lon` — can render connected users on a `MapKit` map, same as JamTaba.
+
+#### Icecast Listener Architecture (To Build)
+```
+URLSession (HTTP data task)       Decode thread                    Render thread
+──────────────────────            ─────────────                    ─────────────────
+URLSessionDataDelegate            AudioFileStream parse            DSPKernel.process()
+  │ didReceive data                 │ + AudioConverter decode          ▲
+  │ append to buffer ──────────>    │ compressed → Float32 PCM         │
+  │ Icy-MetaData: 0 header          │ write to CircularBuffer          │ read from
+  ▼                                 ▼                                  │ CircularBuffer
+[HTTP stream data]              [CircularBuffer/PlaybackBuffer]      [mix into output]
+```
+- Use `AudioFileStreamOpen` + `AudioFileStreamParseBytes` for MP3/AAC container parsing
+- Use `AudioConverterFillComplexBuffer` for decoding compressed packets to PCM Float32
+- All APIs are in AudioToolbox (already linked). MP3 patents expired 2017 — fully free
+- Resampling: use existing vDSP linear interpolation if stream rate ≠ AU rate
+- Wire to render: DSPKernel mixes listener PCM into output buffer alongside RemoteAudioMixer
 
 ### 4. iOS/iPadOS (Lower Priority)
 
@@ -131,9 +154,8 @@ The project already declares `SUPPORTED_PLATFORMS = "iphoneos iphonesimulator ma
 
 #### CRITICAL — must fix before anything runs on iOS
 
-**a) `.loadOutOfProcess` fails on iOS** (`SimplePlayEngine.swift:86`)
-`AVAudioUnit.instantiate(options: .loadOutOfProcess)` silently fails on iOS (out-of-process AU is macOS-only). Host app will never load the AU; `ContentView` shows spinner forever.
-Fix: `#if os(macOS) let options = AudioComponentInstantiationOptions.loadOutOfProcess #else let options = AudioComponentInstantiationOptions() #endif`
+**a) ~~`.loadOutOfProcess` fails on iOS~~ — FIXED** (`SimplePlayEngine.swift`)
+Host app now uses `.loadInProcess`. This fix also resolves the iOS loading issue since in-process works on all platforms.
 
 **b) Extension has no entitlements file — network blocked on iOS** (`project.pbxproj`)
 `ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES` is a macOS-only sandbox key; iOS ignores it. The extension has no `CODE_SIGN_ENTITLEMENTS` file at all. Since `.loadOutOfProcess` will be `[]` on iOS (in-process), the extension inherits the host app's network access — so this may be automatically resolved once (a) is fixed. Verify after fixing (a); if the TCP connection still fails, create `jamauv3Extension/jamauv3Extension.entitlements` with `com.apple.security.network.client = true` and wire `CODE_SIGN_ENTITLEMENTS` in both Debug+Release extension build configs.
@@ -201,7 +223,12 @@ Connection settings (server, port, user) saved to `UserDefaults.standard` are no
 - **IntervalBuffer:** 3-thread model (render → SPSC CircularBuffer → encoding thread → @MainActor callbacks). Start/stop managed by AudioUnitViewController via NINJAMClientDelegate
 - **RemoteAudioMixer:** 3-thread model (@MainActor accumulates OGG fragments → decode thread decodes to PCM → render thread mixes). Double-buffered: decode writes nextBuffer, render swaps at interval boundary. Uses PlaybackBuffer (flat linear buffer) not CircularBuffer. Lives in Shared/Audio/ (compiled into both host + extension)
 - **Download messages:** `ServerDownloadIntervalBegin` (0x04, GUID, username, channelIndex, fourCC) + `ServerDownloadIntervalWrite` (0x05, GUID, flags, audioData). Delegate passes fourCC so mixer can skip silence intervals
-- **Level meters:** Per-slot peaks measured in `RemoteAudioMixer.mixInto()` (post-gain) via `outPeaks` parameter — a DSPKernel-owned scratch buffer passed into `mixInto()`. DSPKernel resets scratch to zero each render callback, collects peaks during mix, then publishes to `userPeakStorage` (UInt32 bit patterns, max-accumulated). `AudioUnitViewController.meterTask` (~15 Hz) reads+resets via `DSPKernel.exchangeUserPeak(slot:)`, applies ×0.85 decay, writes `NINJAMClient.userPeaks`/`.slotUsernames`. `VerticalGainSlider` renders 4px green/red bar (red when >1.0) + real username. Peaks are tied to the render callback that writes the output buffer, ensuring meters reflect actual playback timing
+- **Level meters:** Per-slot peaks measured in `RemoteAudioMixer.mixInto()` (post-gain) via `outPeaks` parameter — a DSPKernel-owned scratch buffer passed into `mixInto()`. DSPKernel resets scratch to zero each render callback, collects peaks during mix, then publishes to `userPeakStorage` (UInt32 bit patterns, max-accumulated). `AudioUnitViewController.meterTask` (~5 Hz) reads+resets via `DSPKernel.exchangeUserPeak(slot:)`, applies ×0.85 decay, writes `NINJAMClient.userPeaks`/`.slotUsernames`. `VerticalGainSlider` renders 4px green/red bar (red when >1.0) + real username. Peaks are tied to the render callback that writes the output buffer, ensuring meters reflect actual playback timing
+- **XPC rate limits:** Out-of-process AUv3 has ~32 Hz XPC message limit. All timers and publishes are throttled: interval timer 5 Hz, meter timer 5 Hz, progress quantized to 100 steps, peaks batched with 0.005 threshold, usernames diffed before publish. KVO on `allParameterValues` replaced with one-time sync
+- **Server browser:** `ServerBrowserViewModel` (@Observable) fetches from `https://ninbot.com/app/servers.php`, parses `NINJAMServerEntry` array. `FlexInt` handles JSON values that may be string or int. `streamURL` prefers `ssl_stream` over `stream`. UI is `ServerBrowserView` presented as inline overlay via `ActiveSheet` enum
+- **AUv3 out-of-process audio limitation:** The extension process (appex) has NO audio output device. `AVPlayer`/`AVAudioEngine` decode audio but produce silence — the AudioQueue output goes nowhere. All audible output MUST go through the AU render callback (`DSPKernel.process()`). This affects listener mode: must manually decode and mix into render output
+- **Build scripts:** `build-and-run.sh` kills stale processes, builds, re-registers extension via `pluginkit -a`, launches from DerivedData. `build-and-install.sh` same but copies to `/Applications` for system-wide availability. Both prevent the "stale extension" problem where macOS loads a cached old binary
+- **Host app loads AU in-process** (`.loadInProcess`): avoids XPC rate-limit noise and NSRemoteView overhead for the test host. Real DAW hosts load out-of-process with their own sandboxing
 
 ## Testing
 
