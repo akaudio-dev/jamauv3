@@ -120,8 +120,13 @@ public class SimplePlayEngine {
             // Load in-process for the test host app — avoids XPC rate-limit noise
             // and the NSRemoteView overhead of out-of-process hosting.
             // Real DAW hosts will load out-of-process with their own sandboxing.
+            #if os(macOS)
+            let options: AudioComponentInstantiationOptions = .loadInProcess
+            #else
+            let options: AudioComponentInstantiationOptions = []
+            #endif
             let audioUnit = try await AVAudioUnit.instantiate(
-                with: component.audioComponentDescription, options: .loadInProcess)
+                with: component.audioComponentDescription, options: options)
             self.avAudioUnit = audioUnit
             return await audioUnit.loadAudioUnitViewController()
         } catch {
@@ -138,6 +143,9 @@ public class SimplePlayEngine {
             log.error("connectAndStart: no audio output device")
             return
         }
+        // On iOS, activate the audio session BEFORE reading input/output formats —
+        // otherwise engine.inputNode returns 0 Hz / 0 channels and connect() crashes.
+        setSessionActive(true)
         connect(audioUnit)
         startPlaying()
     }
@@ -150,6 +158,13 @@ public class SimplePlayEngine {
 
         if audioUnit.wantsAudioInput && Self.hasAudioInput() {
             let inputFormat = engine.inputNode.outputFormat(forBus: 0)
+            guard inputFormat.sampleRate > 0 && inputFormat.channelCount > 0 else {
+                log.warning("Input format invalid (\(inputFormat.sampleRate) Hz, \(inputFormat.channelCount) ch) — skipping input")
+                let hwFormat = engine.outputNode.outputFormat(forBus: 0)
+                let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: hwFormat.sampleRate, channels: 2)
+                engine.connect(audioUnit, to: engine.mainMixerNode, format: stereoFormat)
+                return
+            }
             engine.connect(engine.inputNode, to: audioUnit, format: inputFormat)
             engine.connect(audioUnit, to: engine.mainMixerNode, format: inputFormat)
         } else {

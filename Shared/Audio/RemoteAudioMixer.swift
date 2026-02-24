@@ -13,6 +13,7 @@
 
 import Foundation
 import AudioToolbox
+import CoreAudio
 import Synchronization
 import os.log
 

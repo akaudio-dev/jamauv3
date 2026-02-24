@@ -8,6 +8,7 @@
 import Foundation
 import AVFoundation
 import AudioToolbox
+import CoreAudio
 
 /// Manages an audio bus with pre-allocated buffers for render thread safety.
 class BufferedAudioBus: @unchecked Sendable {

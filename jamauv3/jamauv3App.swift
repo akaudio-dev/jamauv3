@@ -15,6 +15,7 @@ struct jamauv3App: App {
         WindowGroup {
             ContentView(hostModel: hostModel)
         }
+        #if os(macOS)
         .commands {
             CommandGroup(before: .appTermination) {
                 Button("Close") {
@@ -23,5 +24,6 @@ struct jamauv3App: App {
                 .keyboardShortcut("w", modifiers: .control)
             }
         }
+        #endif
     }
 }

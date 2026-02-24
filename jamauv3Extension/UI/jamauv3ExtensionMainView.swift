@@ -49,7 +49,11 @@ struct jamauv3ExtensionMainView: View {
                     icecastPeakReader: icecastPeakReader
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                #if os(macOS)
                 .background(Color(nsColor: .windowBackgroundColor))
+                #else
+                .background(Color(uiColor: .systemBackground))
+                #endif
             }
         }
         .frame(minWidth: 300, minHeight: 400)
@@ -261,7 +265,11 @@ struct jamauv3ExtensionMainView: View {
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #if os(macOS)
         .background(Color(nsColor: .windowBackgroundColor))
+        #else
+        .background(Color(uiColor: .systemBackground))
+        #endif
     }
 
     // MARK: - Helpers

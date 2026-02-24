@@ -8,6 +8,7 @@
 import Foundation
 import AudioToolbox
 import AVFoundation
+import CoreAudio
 
 /// Handles the render loop and event processing for the Audio Unit.
 final class RenderProcessor: @unchecked Sendable {

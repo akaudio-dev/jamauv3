@@ -54,7 +54,8 @@
 - ✅ **Server browser**: fetches public server list from `ninbot.com/app/servers.php`, auto-refreshes every 60s. Shows server name, BPM, BPI, user count, connected usernames. Sorted by user count then priority. Server selection populates connection dialog. File: `jamauv3Extension/UI/ServerBrowser.swift`
 - ✅ **Connection overlay**: replaced `.sheet` with inline ZStack overlay (sheets don't work in out-of-process AUv3)
 - ✅ **XPC rate-limit fixes**: reduced interval timer from 30 Hz → 5 Hz, meter timer from 15 Hz → 5 Hz, quantized progress updates, batched peak/username publishes, removed persistent KVO on `allParameterValues`, removed debug print in parameter setter. Prevents XPC throttling in out-of-process AU
-- ✅ **Host app improvements**: loads AU in-process (`.loadInProcess` — avoids XPC overhead for test host), Ctrl+W close shortcut, audio device checks (skip engine on headless Mac, skip input node if no mic), removed crash observer boilerplate
+- ✅ **Host app improvements**: loads AU in-process (`.loadInProcess` on macOS, default `[]` on iOS — avoids XPC overhead for test host), Ctrl+W close shortcut (macOS), audio device checks (skip engine on headless Mac, skip input node if no mic), audio session activation before graph setup on iOS, format validation guard on input node
+- ✅ **iOS/iPadOS support**: builds and runs on iPad simulator. Platform-conditional fixes: `import CoreAudio` for `UnsafeMutableAudioBufferListPointer`, `Color(uiColor: .systemBackground)` replacing `nsColor`, `AVAudioSession` activation before `AVAudioEngine` graph wiring, `.loadInProcess` → `[]` on iOS, `NSApplication` commands guarded with `#if os(macOS)`
 - ✅ **Log level cleanup**: routine protocol/connection messages demoted from `.info` to `.debug` to reduce noise
 - ✅ **Icecast listener mode**: listen to public NINJAM servers without connecting. Manual decode pipeline: `URLSession` → `AudioFileStream` (MP3 parsing) → `AudioConverterFillComplexBuffer` (decode to Float32 PCM) → `CircularBuffer` → render thread `mixInto()`. Works in out-of-process AUv3 where AVPlayer cannot produce audio. Prebuffer watermark (128000 samples, matching JamTaba's `BUFFER_SIZE`) eliminates glitches from network jitter. Level meter in server browser UI (~15 Hz, exponential decay). File: `jamauv3Extension/DSP/IcecastStreamPlayer.swift`
 - ✅ Tests: protocol parsing, E2E auth, OGG encode/decode, interval serialization, remote mixer, memory leak detection, **level preservation** (66 tests pass). Memory leak tests use TSan-aware thresholds (`memoryThresholdMultiplier` in TestHelpers.swift) — pass with both `-enableThreadSanitizer YES` and without
@@ -150,23 +151,28 @@ User reports remote audio requires ~164% gain to match the passthrough signal le
 - **Listener mode:** ✅ Done. Manual decode pipeline via `IcecastStreamPlayer`: `URLSession` → `AudioFileStream` → `AudioConverter` → `CircularBuffer` → render thread `mixInto()`. Handles MP3 streams. Level meter bar in server browser row (~15 Hz, exponential 0.85× decay, green/red). Stream lifecycle tied to browser open/close. `Icy-MetaData: 0` header suppresses metadata interleaving.
 - **World map:** `users[]` entries include `lat`/`lon` — can render connected users on a `MapKit` map, same as JamTaba.
 
-### 4. iOS/iPadOS (Lower Priority)
+### 4. iOS/iPadOS (Partially Done)
 
-The project already declares `SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx"` and `TARGETED_DEVICE_FAMILY = "1,2,7"`. Platform-conditional code (`hardwareSampleRate`, `setSessionActive`, typealiases, `ViewControllerRepresentable`) is already correct. The following are the remaining blockers, in implementation order:
+The project builds and runs on iPad simulator. Host app loads the AU and audio engine starts at 44100 Hz. Platform-conditional code (`hardwareSampleRate`, `setSessionActive`, typealiases, `ViewControllerRepresentable`) is already correct.
 
-#### CRITICAL — must fix before anything runs on iOS
+#### CRITICAL — FIXED (all resolved)
 
 **a) ~~`.loadOutOfProcess` fails on iOS~~ — FIXED** (`SimplePlayEngine.swift`)
-Host app now uses `.loadInProcess`. This fix also resolves the iOS loading issue since in-process works on all platforms.
+Host app uses `.loadInProcess` on macOS, default `[]` on iOS.
 
-**b) Extension has no entitlements file — network blocked on iOS** (`project.pbxproj`)
-`ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES` is a macOS-only sandbox key; iOS ignores it. The extension has no `CODE_SIGN_ENTITLEMENTS` file at all. Since `.loadOutOfProcess` will be `[]` on iOS (in-process), the extension inherits the host app's network access — so this may be automatically resolved once (a) is fixed. Verify after fixing (a); if the TCP connection still fails, create `jamauv3Extension/jamauv3Extension.entitlements` with `com.apple.security.network.client = true` and wire `CODE_SIGN_ENTITLEMENTS` in both Debug+Release extension build configs.
+**b) ~~Build errors from missing `CoreAudio` import~~ — FIXED** (`RemoteAudioMixer.swift`, `DSPKernel.swift`, `AudioBufferUtils.swift`, `RenderProcessor.swift`)
+`UnsafeMutableAudioBufferListPointer` lives in `CoreAudio` module, not re-exported by `AudioToolbox` on iOS. Added explicit `import CoreAudio`.
 
-**c) Extension microphone entitlement missing** (`project.pbxproj` extension build configs, lines ~472 and ~524)
-`ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO` in the extension. Same in-process logic applies as (b): if loaded in-process the host app's mic permission covers it. Verify after (a). If mic capture still fails: set `ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = YES` and add `INFOPLIST_KEY_NSMicrophoneUsageDescription` to the extension's build settings.
+**c) ~~`NSColor`/`NSApplication` references~~ — FIXED** (`jamauv3ExtensionMainView.swift`, `jamauv3App.swift`)
+`Color(nsColor: .windowBackgroundColor)` → platform-conditional `Color(uiColor: .systemBackground)` on iOS. `NSApplication.shared.terminate()` wrapped in `#if os(macOS)`.
 
-**d) No `AVAudioSession` setup in extension** (`AudioUnitViewController.swift` or `jamauv3ExtensionAudioUnit.swift:allocateRenderResources`)
-The extension process starts with `.soloAmbient` category on iOS — recording is disabled. Add in `AudioUnitViewController.viewDidLoad`:
+**d) ~~Audio session not activated before graph wiring~~ — FIXED** (`SimplePlayEngine.swift`)
+`setSessionActive(true)` now called before `connect()` so `engine.inputNode.outputFormat(forBus: 0)` returns a valid format on iOS. Added format validation guard as safety net.
+
+**e) Extension network/mic entitlements** — likely resolved (in-process inherits host permissions). Verify on real device if TCP or mic capture fails.
+
+**f) No `AVAudioSession` setup in extension** (`AudioUnitViewController.swift`)
+When loaded in a real DAW host on iOS, the extension may need its own `.playAndRecord` session. The test host handles this, but third-party hosts may not. Add if needed:
 ```swift
 #if os(iOS)
 let session = AVAudioSession.sharedInstance()
@@ -174,7 +180,6 @@ try? session.setCategory(.playAndRecord, mode: .measurement, options: [.mixWithO
 try? session.setActive(true)
 #endif
 ```
-`.measurement` mode disables system audio processing. `.mixWithOthers` prevents silencing the host DAW.
 
 #### IMPORTANT — needed for usable UI on iPhone
 
@@ -232,7 +237,7 @@ Connection settings (server, port, user) saved to `UserDefaults.standard` are no
 - **IcecastStreamPlayer:** 2-thread model (URLSession delegate queue decodes, render thread mixes). `AudioFileStreamOpen` (MP3 type hint) + `AudioConverterFillComplexBuffer` for decode. Pre-allocated scratch buffers for both decode and render threads. Ring buffer capacity = ~4 seconds stereo. Prebuffer watermark: 128000 samples (matching JamTaba's `BUFFER_SIZE`) — playback delayed until threshold reached, re-enters prebuffering on underrun. Packet data accumulated directly into raw `inputDataBuffer` (no intermediate Swift `Data` copy). Peak tracked via `_peakLevel` atomic (UInt32 bit pattern), read+reset via `exchangePeak()`. Lifecycle: `AudioUnitViewController` creates/destroys player, wires to `DSPKernel.icecastPlayer`. Callbacks (`onListenStart`/`onListenStop`/`icecastPeakReader`) flow from `AudioUnitViewController` → `jamauv3ExtensionMainView` → `ServerBrowserView` → `ServerBrowserViewModel`
 - **`additiveMix()` utility:** Shared `@inline(__always)` free function in `RemoteAudioMixer.swift` — handles all 4 channel format combinations (stereo→stereo, stereo→mono downmix, mono→stereo, mono→mono) with gain and peak tracking. Used by both `RemoteAudioMixer.mixInto()` and `IcecastStreamPlayer.mixInto()`. RT-safe: no allocations, no locks
 - **Build scripts:** `build-and-run.sh` kills stale processes, builds, re-registers extension via `pluginkit -a`, launches from DerivedData. Proactively removes `/Applications/jamauv3.app` to prevent pluginkit conflicts. `build-and-install.sh` same but copies to `/Applications` for system-wide availability. Both prevent the "stale extension" problem where macOS loads a cached old binary
-- **Host app loads AU in-process** (`.loadInProcess`): avoids XPC rate-limit noise and NSRemoteView overhead for the test host. Real DAW hosts load out-of-process with their own sandboxing
+- **Host app loads AU in-process** (`.loadInProcess` on macOS, `[]` on iOS): avoids XPC rate-limit noise and NSRemoteView overhead for the test host. On iOS, activates `AVAudioSession(.playAndRecord)` before wiring the audio graph. Format validation guard prevents crash if input node returns invalid format. Real DAW hosts load out-of-process with their own sandboxing
 
 ## Testing
 

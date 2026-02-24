@@ -7,6 +7,7 @@
 
 import Foundation
 import AudioToolbox
+import CoreAudio
 import CoreMIDI
 import Synchronization
 
