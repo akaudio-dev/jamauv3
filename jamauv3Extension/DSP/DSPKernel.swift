@@ -103,7 +103,13 @@ final class DSPKernel: @unchecked Sendable {
     
     // MARK: - Parameters
     
+    private var needsAudioValue: AUValue = 0.0
+
     func setParameter(address: AUParameterAddress, value: AUValue) {
+        if address == jamauv3ExtensionParameterAddress_needsAudio {
+            needsAudioValue = value
+            return
+        }
         let index = Int(address - jamauv3ExtensionParameterAddress_userGainBase)
         if index >= 0 && index < Int(jamauv3ExtensionNumUsers) {
             userGains[index] = value
@@ -111,6 +117,9 @@ final class DSPKernel: @unchecked Sendable {
     }
 
     func getParameter(address: AUParameterAddress) -> AUValue {
+        if address == jamauv3ExtensionParameterAddress_needsAudio {
+            return needsAudioValue
+        }
         let index = Int(address - jamauv3ExtensionParameterAddress_userGainBase)
         if index >= 0 && index < Int(jamauv3ExtensionNumUsers) {
             return AUValue(userGains[index])

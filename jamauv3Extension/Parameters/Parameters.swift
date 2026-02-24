@@ -21,4 +21,15 @@ let jamauv3ExtensionParameterSpecs = ParameterTreeSpec {
             )
         }
     }
+    ParameterGroupSpec(identifier: "system", name: "System") {
+        ParameterSpec(
+            address: jamauv3ExtensionParameterAddress_needsAudio,
+            identifier: "needsAudio",
+            name: "Needs Audio",
+            units: .boolean,
+            valueRange: 0.0...1.0,
+            defaultValue: 0.0,
+            flags: [.flag_IsWritable, .flag_IsReadable]
+        )
+    }
 }

@@ -156,6 +156,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         // Periodic diagnostic: log mixer pipeline counters every 5 seconds
         startMixerDiagnostics()
         startMeterTimer()
+        updateNeedsAudio()
     }
 
     /// Stop interval capture on disconnect
@@ -167,6 +168,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         intervalBuffer = nil
 
         stopRemoteAudioMixer()
+        updateNeedsAudio()
     }
 
     /// Update interval buffer config on BPM/BPI change
@@ -280,6 +282,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         auUnit.kernel.icecastPlayer = player
         self.icecastPlayer = player
         player.start(url: url)
+        updateNeedsAudio()
     }
 
     private func stopIcecastListener() {
@@ -288,6 +291,23 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
             auUnit.kernel.icecastPlayer = nil
         }
         icecastPlayer = nil
+        updateNeedsAudio()
+    }
+
+    // MARK: - Needs Audio Signal
+
+    /// Signal the host whether the AU needs the audio engine running.
+    /// Set to 1.0 when NINJAM connected or Icecast listening, 0.0 when idle.
+    private func updateNeedsAudio() {
+        let needs: Bool = (intervalBuffer != nil) || (icecastPlayer != nil)
+        guard let tree = audioUnit?.parameterTree,
+              let param = tree.parameter(withAddress: jamauv3ExtensionParameterAddress_needsAudio) else {
+            return
+        }
+        let newValue: AUValue = needs ? 1.0 : 0.0
+        if param.value != newValue {
+            param.value = newValue
+        }
     }
 
     // MARK: - SwiftUI Configuration

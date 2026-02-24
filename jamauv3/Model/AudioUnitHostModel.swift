@@ -26,8 +26,16 @@ class AudioUnitHostModel {
                 message: viewController == nil ? "Failed to load audio unit." : "",
                 viewController: viewController,
                 isLoaded: true)
-            // Start the audio engine after the UI is displayed
+            #if os(macOS)
+            // macOS: start engine immediately (no battery concern)
             playEngine.connectAndStart()
+            #else
+            // iOS: wire graph but defer engine start until extension signals needsAudio
+            playEngine.connectOnly()
+            if let au = playEngine.avAudioUnit {
+                playEngine.observeNeedsAudio(audioUnit: au)
+            }
+            #endif
         }
     }
 }

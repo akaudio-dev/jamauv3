@@ -64,7 +64,9 @@ public class SimplePlayEngine {
     private let midiOutBlock: AUMIDIOutputEventBlock = { _, _, _, _ in return noErr }
 
     public init() {
+        #if os(macOS)
         setupMIDI()
+        #endif
     }
 
     /// Check if the system has an audio input device before accessing engine.inputNode.
@@ -132,6 +134,73 @@ public class SimplePlayEngine {
         } catch {
             return nil
         }
+    }
+
+    // MARK: - Needs Audio (iOS deferred engine start)
+
+    private let needsAudioParameterAddress: AUParameterAddress = 100
+    private var needsAudioObserverToken: AUParameterObserverToken?
+    private var needsAudioParam: AUParameter?
+    private var stopDebounceTask: Task<Void, Never>?
+
+    /// Wire the audio graph without starting the engine.
+    /// Used on iOS to prepare the graph while deferring engine start for battery savings.
+    func connectOnly() {
+        guard let audioUnit = avAudioUnit else {
+            log.error("connectOnly: no avAudioUnit")
+            return
+        }
+        guard Self.hasAudioOutput() else {
+            log.error("connectOnly: no audio output device")
+            return
+        }
+        setSessionActive(true)
+        connect(audioUnit)
+    }
+
+    /// Observe the extension's `needsAudio` parameter to start/stop the engine on demand.
+    func observeNeedsAudio(audioUnit: AVAudioUnit) {
+        guard let tree = audioUnit.auAudioUnit.parameterTree,
+              let param = tree.parameter(withAddress: needsAudioParameterAddress) else {
+            log.warning("observeNeedsAudio: parameter not found, starting engine immediately")
+            startPlaying()
+            return
+        }
+        self.needsAudioParam = param
+
+        // Check current value in case the extension already set it (e.g., auto-reconnect)
+        if param.value >= 0.5 {
+            startPlaying()
+        }
+
+        needsAudioObserverToken = param.token(byAddingParameterObserver: { [weak self] _, value in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if value >= 0.5 {
+                    self.stopDebounceTask?.cancel()
+                    self.stopDebounceTask = nil
+                    self.startPlaying()
+                } else {
+                    // Debounce stop to avoid rapid start/stop cycles
+                    self.stopDebounceTask?.cancel()
+                    self.stopDebounceTask = Task { @MainActor [weak self] in
+                        try? await Task.sleep(for: .milliseconds(500))
+                        guard !Task.isCancelled else { return }
+                        self?.stopPlaying()
+                    }
+                }
+            }
+        })
+    }
+
+    private func removeNeedsAudioObserver() {
+        stopDebounceTask?.cancel()
+        stopDebounceTask = nil
+        if let token = needsAudioObserverToken, let param = needsAudioParam {
+            param.removeParameterObserver(token)
+        }
+        needsAudioObserverToken = nil
+        needsAudioParam = nil
     }
 
     func connectAndStart() {
@@ -206,6 +275,7 @@ public class SimplePlayEngine {
 
     public func reset() {
         guard let audioUnit = avAudioUnit else { return }
+        removeNeedsAudioObserver()
         stopPlaying()
         engine.disconnectNodeInput(engine.mainMixerNode)
         engine.detach(audioUnit)
