@@ -13,6 +13,10 @@ struct jamauv3ExtensionMainView: View {
     @ObservedObject var connectionSettings: ConnectionSettings
     @ObservedObject var ninjamClient: NINJAMClient
 
+    var onListenStart: ((URL) -> Void)?
+    var onListenStop: (() -> Void)?
+    var icecastPeakReader: (() -> Float)?
+
     enum ActiveSheet: Identifiable {
         case connection, serverBrowser
         var id: Self { self }
@@ -39,7 +43,10 @@ struct jamauv3ExtensionMainView: View {
                     },
                     onDismiss: {
                         activeSheet = nil
-                    }
+                    },
+                    onListenStart: onListenStart,
+                    onListenStop: onListenStop,
+                    icecastPeakReader: icecastPeakReader
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color(nsColor: .windowBackgroundColor))

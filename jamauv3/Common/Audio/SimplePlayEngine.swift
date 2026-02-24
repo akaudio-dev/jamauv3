@@ -8,7 +8,10 @@ import CoreAudio
 import CoreAudioKit
 import AVFoundation
 @preconcurrency import AVFAudio
+import os
 import Synchronization
+
+private let log = Logger(subsystem: "jamauv3.com.jamauv3", category: "SimplePlayEngine")
 
 #if os(iOS) || os(visionOS)
 import UIKit
@@ -127,10 +130,14 @@ public class SimplePlayEngine {
     }
 
     func connectAndStart() {
-        guard let audioUnit = avAudioUnit else { return }
-        // Skip audio engine on machines without output device (e.g. headless/remote Mac).
-        // The UI still works — just no audio processing.
-        guard Self.hasAudioOutput() else { return }
+        guard let audioUnit = avAudioUnit else {
+            log.error("connectAndStart: no avAudioUnit")
+            return
+        }
+        guard Self.hasAudioOutput() else {
+            log.error("connectAndStart: no audio output device")
+            return
+        }
         connect(audioUnit)
         startPlaying()
     }
@@ -168,7 +175,9 @@ public class SimplePlayEngine {
         do {
             try engine.start()
             isPlaying = true
+            log.notice("Audio engine started: sampleRate=\(hwFormat.sampleRate, privacy: .public) Hz, channels=\(hwFormat.channelCount)")
         } catch {
+            log.error("Audio engine failed to start: \(error.localizedDescription, privacy: .public)")
             isPlaying = false
         }
     }

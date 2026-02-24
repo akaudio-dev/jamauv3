@@ -23,6 +23,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
     private let ninjamClient = NINJAMClient()
     private var intervalBuffer: IntervalBuffer?
     private var remoteAudioMixer: RemoteAudioMixer?
+    private var icecastPlayer: IcecastStreamPlayer?
     private var diagnosticTask: Task<Void, Never>?
     private var meterTask: Task<Void, Never>?
 
@@ -268,6 +269,27 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         }
     }
 
+    // MARK: - Icecast Listener
+
+    private func startIcecastListener(url: URL) {
+        stopIcecastListener()
+        guard let auUnit = audioUnit as? jamauv3ExtensionAudioUnit else { return }
+        let sampleRate = auUnit.kernel.sampleRate
+        log.info("Starting Icecast listener: \(url.absoluteString, privacy: .public) @ \(sampleRate) Hz")
+        let player = IcecastStreamPlayer(sampleRate: sampleRate)
+        auUnit.kernel.icecastPlayer = player
+        self.icecastPlayer = player
+        player.start(url: url)
+    }
+
+    private func stopIcecastListener() {
+        icecastPlayer?.stop()
+        if let auUnit = audioUnit as? jamauv3ExtensionAudioUnit {
+            auUnit.kernel.icecastPlayer = nil
+        }
+        icecastPlayer = nil
+    }
+
     // MARK: - SwiftUI Configuration
 
     private func configureSwiftUIView(audioUnit: AUAudioUnit) {
@@ -282,7 +304,10 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         let content = jamauv3ExtensionMainView(
             parameterTree: observableParameterTree,
             connectionSettings: connectionSettings,
-            ninjamClient: ninjamClient
+            ninjamClient: ninjamClient,
+            onListenStart: { [weak self] url in self?.startIcecastListener(url: url) },
+            onListenStop: { [weak self] in self?.stopIcecastListener() },
+            icecastPeakReader: { [weak self] in self?.icecastPlayer?.exchangePeak() ?? 0 }
         )
         let host = HostingController(rootView: content)
         self.addChild(host)

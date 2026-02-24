@@ -20,7 +20,8 @@
 │   ├── DSP/                    # Pure Swift audio processing
 │   │   ├── DSPKernel.swift     # Render thread processing, captures input + mixes remote output
 │   │   ├── CircularBuffer.swift # Lock-free SPSC buffer (Synchronization.Atomic)
-│   │   └── IntervalBuffer.swift # Interval capture → OGG encode → upload messages
+│   │   ├── IntervalBuffer.swift # Interval capture → OGG encode → upload messages
+│   │   └── IcecastStreamPlayer.swift # HTTP→AudioFileStream→AudioConverter→CircularBuffer→render mix
 │   ├── Common/UI/              # ConnectionSettings, AudioUnitViewController (wires IntervalBuffer + RemoteAudioMixer ↔ NINJAMClient)
 │   ├── Parameters/             # AU parameters
 │   └── UI/                     # Main SwiftUI view
@@ -55,6 +56,7 @@
 - ✅ **XPC rate-limit fixes**: reduced interval timer from 30 Hz → 5 Hz, meter timer from 15 Hz → 5 Hz, quantized progress updates, batched peak/username publishes, removed persistent KVO on `allParameterValues`, removed debug print in parameter setter. Prevents XPC throttling in out-of-process AU
 - ✅ **Host app improvements**: loads AU in-process (`.loadInProcess` — avoids XPC overhead for test host), Ctrl+W close shortcut, audio device checks (skip engine on headless Mac, skip input node if no mic), removed crash observer boilerplate
 - ✅ **Log level cleanup**: routine protocol/connection messages demoted from `.info` to `.debug` to reduce noise
+- ✅ **Icecast listener mode**: listen to public NINJAM servers without connecting. Manual decode pipeline: `URLSession` → `AudioFileStream` (MP3 parsing) → `AudioConverterFillComplexBuffer` (decode to Float32 PCM) → `CircularBuffer` → render thread `mixInto()`. Works in out-of-process AUv3 where AVPlayer cannot produce audio. Level meter in server browser UI (~15 Hz, exponential decay). File: `jamauv3Extension/DSP/IcecastStreamPlayer.swift`
 - ✅ Tests: protocol parsing, E2E auth, OGG encode/decode, interval serialization, remote mixer, memory leak detection, **level preservation** (66 tests pass). Memory leak tests use TSan-aware thresholds (`memoryThresholdMultiplier` in TestHelpers.swift) — pass with both `-enableThreadSanitizer YES` and without
 
 ### Interval Buffer Architecture (Upload)
@@ -104,6 +106,23 @@ Main thread (diagnostic timer, 5s)
   │ HUD displays host BPM, mismatch warning
 ```
 
+### Icecast Listener Architecture (Listen Mode)
+```
+URLSession delegate queue              Render thread (DSPKernel.process)
+─────────────────────────              ──────────────────────────────────
+HTTP bytes arrive (MP3 stream)
+  │ AudioFileStreamParseBytes()
+  │ → property callback → AudioConverterNew()
+  │ → packets callback → AudioConverterFillComplexBuffer()
+  │ → Float32 PCM samples
+  │ CircularBuffer.write() ──────────→ CircularBuffer.read()
+  ▼                                    │ additive mix into output
+[delegate queue]                       │ track peak → _peakLevel atomic
+                                       ▼
+                                    Main thread (~15 Hz peakTimer)
+                                      │ exchangePeak() → decay → UI meter
+```
+
 ## Known Issues
 
 ### Signal Level Investigation (Open)
@@ -126,27 +145,10 @@ User reports remote audio requires ~164% gain to match the passthrough signal le
 - Settings persistence (audio quality, latency compensation)
 - Error handling improvements (reconnect logic, timeout UX)
 
-### 3. Discovery &amp; Listener Mode (Medium Priority)
-- **Public server browser:** ✅ Done. GET `https://ninbot.com/app/servers.php` → JSON. Auto-refresh 60s. Sorted by user count. Server selection pre-fills connection dialog.
-- **Listener mode:** Server entries have optional `stream`/`ssl_stream` fields — Icecast/Shoutcast MP3 audio URLs. **AVPlayer cannot work** in out-of-process AUv3 (extension process has no audio output device — audio queue decodes correctly but output goes nowhere). Must use manual decode-and-mix pipeline routed through the AU render callback. See planned architecture below.
+### 3. Discovery &amp; Listener Mode (Done)
+- **Public server browser:** ✅ Done. GET `https://ninbot.com/app/servers.php` → JSON. Auto-refresh 60s + manual refresh button. Cache-busted (`.reloadIgnoringLocalCacheData` + timestamp param). Sorted by user count. Server selection pre-fills connection dialog.
+- **Listener mode:** ✅ Done. Manual decode pipeline via `IcecastStreamPlayer`: `URLSession` → `AudioFileStream` → `AudioConverter` → `CircularBuffer` → render thread `mixInto()`. Handles MP3 streams. Level meter bar in server browser row (~15 Hz, exponential 0.85× decay, green/red). Stream lifecycle tied to browser open/close. `Icy-MetaData: 0` header suppresses metadata interleaving.
 - **World map:** `users[]` entries include `lat`/`lon` — can render connected users on a `MapKit` map, same as JamTaba.
-
-#### Icecast Listener Architecture (To Build)
-```
-URLSession (HTTP data task)       Decode thread                    Render thread
-──────────────────────            ─────────────                    ─────────────────
-URLSessionDataDelegate            AudioFileStream parse            DSPKernel.process()
-  │ didReceive data                 │ + AudioConverter decode          ▲
-  │ append to buffer ──────────>    │ compressed → Float32 PCM         │
-  │ Icy-MetaData: 0 header          │ write to CircularBuffer          │ read from
-  ▼                                 ▼                                  │ CircularBuffer
-[HTTP stream data]              [CircularBuffer/PlaybackBuffer]      [mix into output]
-```
-- Use `AudioFileStreamOpen` + `AudioFileStreamParseBytes` for MP3/AAC container parsing
-- Use `AudioConverterFillComplexBuffer` for decoding compressed packets to PCM Float32
-- All APIs are in AudioToolbox (already linked). MP3 patents expired 2017 — fully free
-- Resampling: use existing vDSP linear interpolation if stream rate ≠ AU rate
-- Wire to render: DSPKernel mixes listener PCM into output buffer alongside RemoteAudioMixer
 
 ### 4. iOS/iPadOS (Lower Priority)
 
@@ -227,7 +229,8 @@ Connection settings (server, port, user) saved to `UserDefaults.standard` are no
 - **XPC rate limits:** Out-of-process AUv3 has ~32 Hz XPC message limit. All timers and publishes are throttled: interval timer 5 Hz, meter timer 5 Hz, progress quantized to 100 steps, peaks batched with 0.005 threshold, usernames diffed before publish. KVO on `allParameterValues` replaced with one-time sync
 - **Server browser:** `ServerBrowserViewModel` (@Observable) fetches from `https://ninbot.com/app/servers.php`, parses `NINJAMServerEntry` array. `FlexInt` handles JSON values that may be string or int. `streamURL` prefers `ssl_stream` over `stream`. UI is `ServerBrowserView` presented as inline overlay via `ActiveSheet` enum
 - **AUv3 out-of-process audio limitation:** The extension process (appex) has NO audio output device. `AVPlayer`/`AVAudioEngine` decode audio but produce silence — the AudioQueue output goes nowhere. All audible output MUST go through the AU render callback (`DSPKernel.process()`). This affects listener mode: must manually decode and mix into render output
-- **Build scripts:** `build-and-run.sh` kills stale processes, builds, re-registers extension via `pluginkit -a`, launches from DerivedData. `build-and-install.sh` same but copies to `/Applications` for system-wide availability. Both prevent the "stale extension" problem where macOS loads a cached old binary
+- **IcecastStreamPlayer:** 2-thread model (URLSession delegate queue decodes, render thread mixes). `AudioFileStreamOpen` (MP3 type hint) + `AudioConverterFillComplexBuffer` for decode. Pre-allocated scratch buffers for both decode and render threads. Ring buffer capacity = 2 seconds stereo. Peak tracked via `_peakLevel` atomic (UInt32 bit pattern), read+reset via `exchangePeak()`. Lifecycle: `AudioUnitViewController` creates/destroys player, wires to `DSPKernel.icecastPlayer`. Callbacks (`onListenStart`/`onListenStop`/`icecastPeakReader`) flow from `AudioUnitViewController` → `jamauv3ExtensionMainView` → `ServerBrowserView` → `ServerBrowserViewModel`
+- **Build scripts:** `build-and-run.sh` kills stale processes, builds, re-registers extension via `pluginkit -a`, launches from DerivedData. Proactively removes `/Applications/jamauv3.app` to prevent pluginkit conflicts. `build-and-install.sh` same but copies to `/Applications` for system-wide availability. Both prevent the "stale extension" problem where macOS loads a cached old binary
 - **Host app loads AU in-process** (`.loadInProcess`): avoids XPC rate-limit noise and NSRemoteView overhead for the test host. Real DAW hosts load out-of-process with their own sandboxing
 
 ## Testing

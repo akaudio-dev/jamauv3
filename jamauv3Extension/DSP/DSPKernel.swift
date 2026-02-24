@@ -55,6 +55,9 @@ final class DSPKernel: @unchecked Sendable {
     /// Remote audio mixer for decoding and playing back other users' audio
     var remoteAudioMixer: RemoteAudioMixer?
 
+    /// Icecast stream player for listen-only mode (server browser)
+    var icecastPlayer: IcecastStreamPlayer?
+
     var musicalContextBlock: AUHostMusicalContextBlock?
     var transportStateBlock: AUHostTransportStateBlock?
     var midiOutputEventBlock: AUMIDIEventListBlock?
@@ -235,7 +238,6 @@ final class DSPKernel: @unchecked Sendable {
                  outputBufferList: UnsafeMutablePointer<AudioBufferList>,
                  frameCount: AUAudioFrameCount,
                  bufferStartTime: AUEventSampleTime) {
-        
         // Read host musical context (RT-safe: stack vars + atomic stores)
         var tempo: Double = 0
         var beatPosition: Double = 0
@@ -337,6 +339,9 @@ final class DSPKernel: @unchecked Sendable {
                 storage[i] = peakBits
             }
         }
+
+        // Mix Icecast listener audio (server browser listen mode)
+        icecastPlayer?.mixInto(outputBufferList: outputBufferList, frameCount: Int(frameCount))
     }
     
     // MARK: - Event Handling
