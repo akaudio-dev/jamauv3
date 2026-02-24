@@ -313,20 +313,12 @@ final class DSPKernel: @unchecked Sendable {
             computeDriftCorrection(hostBPM: tempo, hostBeat: beatPosition)
         }
 
-        // Process each channel
-        for channelIndex in 0..<min(inputBuffers.count, outputBuffers.count) {
-            guard let inputData = inputBuffers[channelIndex].mData,
-                  let outputData = outputBuffers[channelIndex].mData else {
-                continue
-            }
-
-            let inputFloats = inputData.assumingMemoryBound(to: Float.self)
-            let outputFloats = outputData.assumingMemoryBound(to: Float.self)
-
-            // Apply envelope per sample (user gains will be applied when mixing remote streams)
-            for frameIndex in 0..<Int(frameCount) {
-                outputFloats[frameIndex] = inputFloats[frameIndex] * noteEnvelope
-            }
+        // Zero output buffers — only remote audio and Icecast will be heard.
+        // Input was already captured by IntervalBuffer above for NINJAM upload.
+        // We don't pass mic through to output to avoid feedback on speakers.
+        for channelIndex in 0..<outputBuffers.count {
+            guard let outputData = outputBuffers[channelIndex].mData else { continue }
+            memset(outputData, 0, Int(frameCount) * MemoryLayout<Float>.size)
         }
 
         // Mix remote users' audio into the output
