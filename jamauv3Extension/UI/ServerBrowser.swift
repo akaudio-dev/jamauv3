@@ -41,7 +41,7 @@ struct NINJAMServerEntry: Decodable, Identifiable {
     }
 
     var portNumber: UInt16 { UInt16(port) ?? 2049 }
-    var userCountValue: Int { userCount?.value ?? users.count }
+    var userCountValue: Int { users.count }
     var maxUsers: Int { userMax?.value ?? userLimit?.value ?? 0 }
 
     var streamURL: URL? {
