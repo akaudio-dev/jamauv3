@@ -15,10 +15,8 @@ struct ContentView: View {
         } else if hostModel.viewModel.isLoaded {
             Text(hostModel.viewModel.message)
                 .foregroundColor(.red)
-                .frame(minWidth: 300, minHeight: 400)
         } else {
             ProgressView("Loading…")
-                .frame(minWidth: 300, minHeight: 400)
         }
     }
 }
