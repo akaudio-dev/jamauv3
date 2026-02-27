@@ -242,7 +242,7 @@ struct ServerBrowserView: View {
                         .font(.largeTitle)
                         .foregroundColor(.secondary)
                     Text(error)
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
                     Button("Retry") { viewModel.fetch() }
@@ -300,7 +300,7 @@ struct ServerRowView: View {
                 Button(action: onConnect) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(server.name)
-                            .font(.caption.bold())
+                            .font(.callout.bold())
                             .foregroundColor(.primary)
 
                         HStack(spacing: 8) {
@@ -309,12 +309,12 @@ struct ServerRowView: View {
                             Label("\(server.userCountValue)/\(server.maxUsers)",
                                   systemImage: "person.2")
                         }
-                        .font(.caption2)
+                        .font(.footnote)
                         .foregroundColor(.secondary)
 
                         if !server.users.isEmpty {
                             Text(server.users.map(\.name).joined(separator: ", "))
-                                .font(.caption2)
+                                .font(.footnote)
                                 .foregroundColor(.green)
                                 .lineLimit(1)
                         }

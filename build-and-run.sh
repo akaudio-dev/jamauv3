@@ -26,6 +26,9 @@ if [ -d "/Applications/jamauv3.app" ]; then
     rm -rf "/Applications/jamauv3.app"
 fi
 
+echo "==> Cleaning..."
+xcodebuild clean -scheme jamauv3 -destination 'platform=macOS' -quiet 2>&1 | grep -E '^(error:|Clean )' || true
+
 echo "==> Building..."
 xcodebuild build -scheme jamauv3 -destination 'platform=macOS' -quiet 2>&1 | grep -E '^(error:|Build )' || true
 

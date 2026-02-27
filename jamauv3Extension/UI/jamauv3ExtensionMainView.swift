@@ -65,7 +65,7 @@ struct jamauv3ExtensionMainView: View {
             HStack(spacing: 6) {
                 if ninjamClient.isConnected && ninjamClient.bpm > 0 {
                     Text("\(ninjamClient.bpm)/\(ninjamClient.bpi)")
-                        .font(.caption.monospacedDigit().bold())
+                        .font(.callout.monospacedDigit().bold())
                         .foregroundColor(ninjamClient.isBPMMismatch ? .orange : .primary)
                         .fixedSize()
 
@@ -73,7 +73,7 @@ struct jamauv3ExtensionMainView: View {
                         .tint(.green)
 
                     Text("\(ninjamClient.currentBeat + 1)/\(ninjamClient.bpi)")
-                        .font(.caption.monospacedDigit().bold())
+                        .font(.callout.monospacedDigit().bold())
                         .fixedSize()
                 }
 
@@ -85,27 +85,27 @@ struct jamauv3ExtensionMainView: View {
 
                 if ninjamClient.isConnected {
                     Text("\(connectionSettings.serverName):\(connectionSettings.port)")
-                        .font(.caption)
+                        .font(.callout)
                         .lineLimit(1)
                     Button(action: { ninjamClient.disconnect() }) {
                         Image(systemName: "network.slash")
-                            .font(.caption)
+                            .font(.callout)
                             .foregroundColor(.red)
                     }
                     .buttonStyle(.borderless)
                 } else {
                     Text(ninjamClient.connectionStatus)
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                     Button(action: { activeSheet = .serverBrowser }) {
                         Image(systemName: "globe")
-                            .font(.caption)
+                            .font(.callout)
                     }
                     .buttonStyle(.borderless)
                     Button(action: { activeSheet = .connection }) {
                         Image(systemName: "network.badge.shield.half.filled")
-                            .font(.caption)
+                            .font(.callout)
                     }
                     .buttonStyle(.borderless)
                 }
@@ -119,7 +119,7 @@ struct jamauv3ExtensionMainView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                     Text("DAW tempo \(ninjamClient.hostBPM, specifier: "%.0f") BPM ≠ server \(ninjamClient.bpm) BPM")
                 }
-                .font(.caption2)
+                .font(.footnote)
                 .foregroundColor(.orange)
                 .padding(.horizontal, 10)
                 .padding(.bottom, 4)
@@ -156,7 +156,7 @@ struct jamauv3ExtensionMainView: View {
             // Server topic bar
             if ninjamClient.isConnected && !ninjamClient.serverTopic.isEmpty {
                 Text(ninjamClient.serverTopic)
-                    .font(.caption2)
+                    .font(.footnote)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -193,12 +193,12 @@ struct jamauv3ExtensionMainView: View {
                 HStack(spacing: 6) {
                     TextField("Message...", text: $chatInput)
                         .textFieldStyle(.plain)
-                        .font(.caption)
+                        .font(.callout)
                         .onSubmit { sendMessage() }
 
                     Button(action: sendMessage) {
                         Image(systemName: "paperplane.fill")
-                            .font(.caption)
+                            .font(.callout)
                     }
                     .buttonStyle(.borderless)
                     .disabled(chatInput.trimmingCharacters(in: .whitespaces).isEmpty)
@@ -240,7 +240,7 @@ struct jamauv3ExtensionMainView: View {
 
                 if let error = ninjamClient.lastError {
                     Text(error)
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundColor(.red)
                 }
 
@@ -279,15 +279,15 @@ struct jamauv3ExtensionMainView: View {
         switch entry.type {
         case .message(let from, let text):
             HStack(spacing: 0) {
-                Text("\(from): ").font(.caption).bold()
-                Text(text).font(.caption)
+                Text("\(from): ").font(.callout).bold()
+                Text(text).font(.callout)
             }
         case .join(let username):
-            Text("* \(username) joined").font(.caption).foregroundColor(.green)
+            Text("* \(username) joined").font(.callout).foregroundColor(.green)
         case .part(let username):
-            Text("* \(username) left").font(.caption).foregroundColor(.red)
+            Text("* \(username) left").font(.callout).foregroundColor(.red)
         case .topic(let text):
-            Text("Topic: \(text)").font(.caption).italic().foregroundColor(.secondary)
+            Text("Topic: \(text)").font(.callout).italic().foregroundColor(.secondary)
         }
     }
 

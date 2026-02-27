@@ -16,7 +16,7 @@ struct VerticalGainSlider: View {
     var body: some View {
         VStack(spacing: 2) {
             Text(username.isEmpty ? param.displayName : username)
-                .font(.caption2)
+                .font(.footnote)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
 
@@ -49,7 +49,7 @@ struct VerticalGainSlider: View {
             .frame(height: 160)
 
             Text("\(Int(param.value * 100))%")
-                .font(.caption2)
+                .font(.footnote)
                 .monospacedDigit()
         }
         .frame(maxWidth: .infinity)
