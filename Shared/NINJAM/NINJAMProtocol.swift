@@ -12,7 +12,7 @@ import CryptoKit
 // MARK: - Protocol Constants
 
 /// NINJAM default server port
-public let NJ_PORT: UInt16 = 2049
+nonisolated public let NJ_PORT: UInt16 = 2049
 
 /// Maximum message payload size
 public let NET_MESSAGE_MAX_SIZE = 16384

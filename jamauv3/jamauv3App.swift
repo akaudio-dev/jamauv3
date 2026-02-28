@@ -14,7 +14,9 @@ struct jamauv3App: App {
     var body: some Scene {
         WindowGroup {
             ContentView(hostModel: hostModel)
+                #if os(macOS)
                 .frame(width: 530, height: 560)
+                #endif
         }
         #if os(macOS)
         .windowResizability(.contentSize)

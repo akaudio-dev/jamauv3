@@ -92,11 +92,21 @@
 			);
 			target = 1CDA07002F1AF65F00D4544F /* jamauv3Extension */;
 		};
+		AA00000000000000000F0002 /* Exceptions for "jamauv3" folder in "jamauv3" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 1CDA06C22F1AF65E00D4544F /* jamauv3 */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		1CDA06C52F1AF65E00D4544F /* jamauv3 */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				AA00000000000000000F0002 /* Exceptions for "jamauv3" folder in "jamauv3" target */,
+			);
 			path = jamauv3;
 			sourceTree = "<group>";
 		};
@@ -703,6 +713,7 @@
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = jamauv3/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Jam AUv3";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Jam AUv3 captures audio to stream to NINJAM sessions.";
@@ -767,6 +778,7 @@
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = jamauv3/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Jam AUv3";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.music";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Jam AUv3 captures audio to stream to NINJAM sessions.";

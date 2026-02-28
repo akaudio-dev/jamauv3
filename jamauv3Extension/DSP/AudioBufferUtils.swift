@@ -47,7 +47,7 @@ class BufferedAudioBus: @unchecked Sendable {
 }
 
 /// Output bus with buffer preparation for null output pointers.
-final class BufferedOutputBus: BufferedAudioBus {
+final class BufferedOutputBus: BufferedAudioBus, @unchecked Sendable {
     
     /// Prepares the output buffer list, copying internal buffer pointers
     /// if the caller passed null buffer pointers.
@@ -76,7 +76,7 @@ final class BufferedOutputBus: BufferedAudioBus {
 }
 
 /// Input bus that can pull audio data from upstream.
-final class BufferedInputBus: BufferedAudioBus {
+final class BufferedInputBus: BufferedAudioBus, @unchecked Sendable {
     
     /// Pulls input data by preparing the buffer list and calling the pull block.
     func pullInput(actionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,

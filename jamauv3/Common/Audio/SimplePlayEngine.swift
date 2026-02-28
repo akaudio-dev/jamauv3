@@ -39,7 +39,7 @@ extension AVAudioUnit {
         let viewController = await auAudioUnit.requestViewController()
         if #available(macOS 13.0, iOS 16.0, *) {
             if viewController == nil {
-                let genericViewController = await AUGenericViewController()
+                let genericViewController = AUGenericViewController()
                 await MainActor.run { genericViewController.auAudioUnit = self.auAudioUnit }
                 return genericViewController
             }
@@ -63,10 +63,13 @@ public class SimplePlayEngine {
     private let _scheduleMIDIEventListBlock = Mutex<AUMIDIEventListBlock?>(nil)
     private let midiOutBlock: AUMIDIOutputEventBlock = { _, _, _, _ in return noErr }
 
+    #if os(iOS) || os(visionOS)
+    /// Currently loaded AUv3 instrument (input source for instrument mode).
+    var instrumentAU: AVAudioUnit?
+    #endif
+
     public init() {
-        #if os(macOS)
         setupMIDI()
-        #endif
     }
 
     /// Check if the system has an audio input device before accessing engine.inputNode.
@@ -102,10 +105,10 @@ public class SimplePlayEngine {
     #endif
 
     private func setupMIDI() {
-        MIDIManager.shared.setupPort(midiProtocol: MIDIProtocolID._2_0, receiveBlock: { [weak self] eventList, _ in
+        _ = MIDIManager.shared.setupPort(midiProtocol: MIDIProtocolID._2_0, receiveBlock: { [weak self] eventList, _ in
             guard let self else { return }
             let block = self._scheduleMIDIEventListBlock.withLock { $0 }
-            block?(AUEventSampleTimeImmediate, 0, eventList)
+            _ = block?(AUEventSampleTimeImmediate, 0, eventList)
         })
     }
 
@@ -282,15 +285,138 @@ public class SimplePlayEngine {
         avAudioUnit = nil
     }
 
-    private func setSessionActive(_ active: Bool) {
+    private func setSessionActive(_ active: Bool, needsMic: Bool = true) {
 #if os(iOS) || os(visionOS)
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .default)
+            if needsMic {
+                try session.setCategory(.playAndRecord, mode: .default,
+                                        options: [.defaultToSpeaker, .allowBluetoothHFP])
+            } else {
+                try session.setCategory(.playback, mode: .default)
+            }
             try session.setActive(active)
         } catch {
-            print("Could not set Audio Session active \(active). error: \(error).")
+            log.error("Could not set Audio Session active \(active): \(error.localizedDescription)")
         }
 #endif
     }
+
+    // MARK: - Input Source Selection (iOS)
+
+#if os(iOS) || os(visionOS)
+
+    /// Switch the audio input source. Rewires the AVAudioEngine graph.
+    func setInputSource(_ source: InputSourceType) async {
+        guard let audioUnit = avAudioUnit else {
+            log.error("setInputSource: no avAudioUnit")
+            return
+        }
+
+        let wasPlaying = isPlaying
+        if isPlaying { stopPlaying() }
+
+        // Disconnect existing graph (keep jamauv3 AU attached)
+        engine.disconnectNodeInput(audioUnit)
+        engine.disconnectNodeOutput(audioUnit)
+        engine.disconnectNodeInput(engine.mainMixerNode)
+
+        // Detach previous instrument if any
+        if let oldInst = instrumentAU {
+            engine.disconnectNodeInput(oldInst)
+            engine.disconnectNodeOutput(oldInst)
+            engine.detach(oldInst)
+            instrumentAU = nil
+        }
+
+        switch source {
+        case .microphone:
+            setPreferredInput(nil)
+            setSessionActive(true, needsMic: true)
+            connectMicToAU(audioUnit)
+            setMIDITargetJamauv3()
+
+        case .hardwareInput(let port):
+            setPreferredInput(port)
+            setSessionActive(true, needsMic: true)
+            connectMicToAU(audioUnit)
+            setMIDITargetJamauv3()
+
+        case .instrument(let desc):
+            setSessionActive(true, needsMic: false)
+            do {
+                let instAU = try await AVAudioUnit.instantiate(with: desc, options: [])
+                self.instrumentAU = instAU
+                connectInstrumentToAU(instAU, jamauv3: audioUnit)
+                setMIDITargetInstrument(instAU)
+            } catch {
+                log.error("Failed to load instrument: \(error.localizedDescription)")
+                // Fall back to mic
+                setSessionActive(true, needsMic: true)
+                connectMicToAU(audioUnit)
+                setMIDITargetJamauv3()
+            }
+        }
+
+        if wasPlaying { startPlaying() }
+    }
+
+    /// Load the instrument AU's view controller for display.
+    func loadInstrumentViewController() async -> ViewController? {
+        guard let instAU = instrumentAU else { return nil }
+        return await instAU.loadAudioUnitViewController()
+    }
+
+    // MARK: - Graph Wiring Helpers
+
+    /// Wire: inputNode (mic) → jamauv3 AU → mainMixer
+    private func connectMicToAU(_ audioUnit: AVAudioUnit) {
+        if Self.hasAudioInput() {
+            let inputFormat = engine.inputNode.outputFormat(forBus: 0)
+            guard inputFormat.sampleRate > 0 && inputFormat.channelCount > 0 else {
+                log.warning("Input format invalid — skipping mic input")
+                let hwFormat = engine.outputNode.outputFormat(forBus: 0)
+                let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: hwFormat.sampleRate, channels: 2)
+                engine.connect(audioUnit, to: engine.mainMixerNode, format: stereoFormat)
+                return
+            }
+            engine.connect(engine.inputNode, to: audioUnit, format: inputFormat)
+            engine.connect(audioUnit, to: engine.mainMixerNode, format: inputFormat)
+        } else {
+            let hwFormat = engine.outputNode.outputFormat(forBus: 0)
+            let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: hwFormat.sampleRate, channels: 2)
+            engine.connect(audioUnit, to: engine.mainMixerNode, format: stereoFormat)
+        }
+    }
+
+    /// Wire: instrument AU → jamauv3 AU → mainMixer
+    private func connectInstrumentToAU(_ instAU: AVAudioUnit, jamauv3 audioUnit: AVAudioUnit) {
+        let hwFormat = engine.outputNode.outputFormat(forBus: 0)
+        let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: hwFormat.sampleRate, channels: 2)!
+
+        engine.attach(instAU)
+        engine.connect(instAU, to: audioUnit, format: stereoFormat)
+        engine.connect(audioUnit, to: engine.mainMixerNode, format: stereoFormat)
+    }
+
+    private func setPreferredInput(_ port: AVAudioSessionPortDescription?) {
+        do {
+            try AVAudioSession.sharedInstance().setPreferredInput(port)
+        } catch {
+            log.error("Failed to set preferred input: \(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - MIDI Target
+
+    private func setMIDITargetJamauv3() {
+        guard let au = avAudioUnit else { return }
+        _scheduleMIDIEventListBlock.withLock { $0 = au.auAudioUnit.scheduleMIDIEventListBlock }
+    }
+
+    private func setMIDITargetInstrument(_ instAU: AVAudioUnit) {
+        _scheduleMIDIEventListBlock.withLock { $0 = instAU.auAudioUnit.scheduleMIDIEventListBlock }
+    }
+
+#endif
 }

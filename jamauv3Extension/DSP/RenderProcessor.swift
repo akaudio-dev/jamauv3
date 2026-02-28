@@ -129,14 +129,6 @@ final class RenderProcessor: @unchecked Sendable {
         frameCount: AUAudioFrameCount,
         frameOffset: AUAudioFrameCount
     ) {
-        // Adjust buffer pointers by frame offset
-        let inBuffers = UnsafeMutableAudioBufferListPointer(inBufferList)
-        let outBuffers = UnsafeMutableAudioBufferListPointer(outBufferList)
-        
-        // Create offset buffer lists for this segment
-        // For simplicity, we'll process the full buffer and the kernel handles offset internally
-        // In a production implementation, you'd create temporary buffer lists with offset pointers
-        
         kernel.process(
             inputBufferList: inBufferList,
             outputBufferList: outBufferList,

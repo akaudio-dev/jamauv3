@@ -371,7 +371,7 @@ final class DSPKernel: @unchecked Sendable {
     
     func handleMIDIEventList(now: AUEventSampleTime, event: UnsafePointer<AUMIDIEventList>) {
         // Process MIDI events
-        var iterator = event.pointee.eventList.packet
+        let iterator = event.pointee.eventList.packet
         for _ in 0..<event.pointee.eventList.numPackets {
             processMIDIPacket(iterator)
             // Note: In real implementation, you'd iterate through the packet list

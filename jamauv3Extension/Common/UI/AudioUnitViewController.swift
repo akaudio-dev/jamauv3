@@ -98,14 +98,12 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
 			}
 			
 			audioUnit.setupParameterTree(jamauv3ExtensionParameterSpecs.createAUParameterTree())
-			
-			// One-time sync: ensure AU has initial values from the host.
-			// Do NOT use persistent KVO on allParameterValues — it fires on every
-			// parameter change, flooding XPC with >32 Hz messages in out-of-process AU.
-			if let tree = audioUnit.parameterTree {
-				for param in tree.allParameters { param.value = param.value }
-			}
-			
+
+			// Note: setupParameterTree already initializes kernel parameters from the tree.
+			// Do NOT add a parameter value sync loop here — in out-of-process AU on iOS,
+			// each param.value = param.value generates an XPC round-trip, and the burst
+			// of N parameter writes can exceed the 32 Hz XPC rate limit.
+
 			guard audioUnit.parameterTree != nil else {
 				log.error("Unable to access AU ParameterTree")
 				return audioUnit

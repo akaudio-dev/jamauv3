@@ -198,7 +198,7 @@ final class NINJAMClient: ObservableObject {
         connection = NWConnection(to: endpoint, using: parameters)
 
         connection?.stateUpdateHandler = { [weak self] newState in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 self?.handleConnectionStateChange(newState)
             }
         }
@@ -253,32 +253,32 @@ final class NINJAMClient: ObservableObject {
 
     private func startReceiving() {
         connection?.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-            guard let self = self else { return }
-
             if let error = error {
-                Task { @MainActor in
-                    self.logger.error("Receive error: \(error.localizedDescription)")
-                    self.setState(.error("Receive error: \(error.localizedDescription)"))
+                Task { @MainActor [weak self] in
+                    self?.logger.error("Receive error: \(error.localizedDescription)")
+                    self?.setState(.error("Receive error: \(error.localizedDescription)"))
                 }
                 return
             }
 
             if let data = data, !data.isEmpty {
-                Task { @MainActor in
-                    self.lastReceiveTime = Date()
-                    self.receiveBuffer.append(data)
-                    self.processReceivedData()
+                Task { @MainActor [weak self] in
+                    self?.lastReceiveTime = Date()
+                    self?.receiveBuffer.append(data)
+                    self?.processReceivedData()
                 }
             }
 
             if isComplete {
-                Task { @MainActor in
-                    self.logger.debug("Connection closed by server")
-                    self.setState(.disconnected)
+                Task { @MainActor [weak self] in
+                    self?.logger.debug("Connection closed by server")
+                    self?.setState(.disconnected)
                 }
             } else {
                 // Continue receiving
-                self.startReceiving()
+                Task { @MainActor [weak self] in
+                    self?.startReceiving()
+                }
             }
         }
     }
@@ -531,7 +531,7 @@ final class NINJAMClient: ObservableObject {
             if let error = error {
                 self?.logger.error("Send error: \(error.localizedDescription)")
             } else {
-                Task { @MainActor in
+                Task { @MainActor [weak self] in
                     self?.lastSendTime = Date()
                 }
             }
@@ -582,7 +582,9 @@ final class NINJAMClient: ObservableObject {
     private func startKeepaliveTimer() {
         keepaliveTimer?.invalidate()
         keepaliveTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.checkKeepalive()
+            Task { @MainActor [weak self] in
+                self?.checkKeepalive()
+            }
         }
     }
 
@@ -625,7 +627,9 @@ final class NINJAMClient: ObservableObject {
 
         // ~5 Hz — smooth for progress bar, combined with meter timer stays under XPC 32 Hz limit
         intervalTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
-            self?.updateIntervalProgress()
+            Task { @MainActor [weak self] in
+                self?.updateIntervalProgress()
+            }
         }
     }
 

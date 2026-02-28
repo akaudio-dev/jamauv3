@@ -179,7 +179,7 @@ struct jamauv3ExtensionMainView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
                 }
-                .onChange(of: ninjamClient.chatMessages.count) { _ in
+                .onChange(of: ninjamClient.chatMessages.count) {
                     if let last = ninjamClient.chatMessages.last {
                         withAnimation(.easeOut(duration: 0.15)) {
                             proxy.scrollTo(last.id, anchor: .bottom)
