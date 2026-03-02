@@ -313,7 +313,10 @@ struct ServerRowView: View {
                         .foregroundColor(.secondary)
 
                         if !server.users.isEmpty {
-                            Text(server.users.map(\.name).joined(separator: ", "))
+                            Text(server.users.map { u in
+                                if let co = u.co, !co.isEmpty { return "\(u.name) (\(co))" }
+                                return u.name
+                            }.joined(separator: ", "))
                                 .font(.footnote)
                                 .foregroundColor(.green)
                                 .lineLimit(1)

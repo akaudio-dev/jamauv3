@@ -115,7 +115,7 @@ public class SimplePlayEngine {
     // MARK: - Load
 
     func initComponent(type: String, subType: String, manufacturer: String) async -> ViewController? {
-        reset()
+        reset() 
 
         guard let component = AVAudioUnit.findComponent(type: type, subType: subType, manufacturer: manufacturer) else {
             return nil

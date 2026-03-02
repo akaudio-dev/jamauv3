@@ -9,6 +9,10 @@ import SwiftUI
 
 @main
 struct jamauv3App: App {
+    #if os(macOS)
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    #endif
+
     private let hostModel = AudioUnitHostModel()
 
     var body: some Scene {
@@ -31,3 +35,11 @@ struct jamauv3App: App {
         #endif
     }
 }
+
+#if os(macOS)
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+}
+#endif
