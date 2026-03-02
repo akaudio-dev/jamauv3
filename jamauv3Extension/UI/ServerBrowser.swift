@@ -314,12 +314,16 @@ struct ServerRowView: View {
 
                         if !server.users.isEmpty {
                             Text(server.users.map { u in
-                                if let co = u.co, !co.isEmpty { return "\(u.name) (\(co))" }
+                                let parts = [u.city, u.co].compactMap { s -> String? in
+                                    guard let s, !s.isEmpty else { return nil }
+                                    return s.count > 16 ? String(s.prefix(16)) + "…" : s
+                                }
+                                if !parts.isEmpty { return "\(u.name) (\(parts.joined(separator: ", ")))" }
                                 return u.name
                             }.joined(separator: ", "))
                                 .font(.footnote)
                                 .foregroundColor(.green)
-                                .lineLimit(1)
+                                .lineLimit(16)
                         }
                     }
                 }
