@@ -55,16 +55,10 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
     private let prebufferThreshold: Int  // samples needed before playback starts/resumes
     private var formatDiscovered = false
 
-    // Diagnostic counters (delegate queue)
+    // Session counters for stop summary
     private var totalBytesReceived: Int = 0
-    private var totalPacketsReceived: Int = 0
     private var totalPacketsDecoded: Int = 0
-    private var totalSamplesDecoded: Int = 0
-    private var totalPacketsDropped: Int = 0
-    // Render thread diagnostic counters (atomic for cross-thread reads)
     private let _totalFramesMixed = Atomic<Int>(0)
-    private let _mixCallCount = Atomic<Int>(0)
-    private let _prebufferWaits = Atomic<Int>(0)
     private let _underrunCount = Atomic<Int>(0)
 
     // Peak level (render thread writes, main thread reads via exchangePeak)
@@ -92,7 +86,7 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
             mReserved: 0
         )
         // Match JamTaba's BUFFER_SIZE = 128000 for prebuffer threshold.
-        // Ring buffer holds ~4 seconds — well above the prebuffer watermark.
+        // Ring buffer holds ~8 seconds — well above the prebuffer watermark.
         self.prebufferThreshold = 128000
         let capacity = max(128000 * 4, Int(sampleRate * 8) * channels)
         self.ringBuffer = CircularBuffer(capacity: capacity)
@@ -118,19 +112,12 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
         ringBuffer.reset()
         formatDiscovered = false
 
-        // Reset diagnostic counters
         totalBytesReceived = 0
-        totalPacketsReceived = 0
         totalPacketsDecoded = 0
-        totalSamplesDecoded = 0
-        totalPacketsDropped = 0
         _totalFramesMixed.store(0, ordering: .relaxed)
-        _mixCallCount.store(0, ordering: .relaxed)
-        _prebufferWaits.store(0, ordering: .relaxed)
         _underrunCount.store(0, ordering: .relaxed)
 
-        log.notice("▶ Starting Icecast stream: \(url.absoluteString, privacy: .public)")
-        log.notice("  Output format: \(self.outputFormat.mSampleRate) Hz, \(self.outputChannels) ch, prebuffer=\(self.prebufferThreshold) samples")
+        log.info("Starting Icecast stream: \(url.absoluteString, privacy: .public) @ \(self.outputFormat.mSampleRate) Hz \(self.outputChannels)ch")
 
         // Open AudioFileStream for MP3 (most Icecast servers serve MP3)
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
@@ -161,11 +148,7 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
 
     func stop() {
         guard isRunning.exchange(false, ordering: .acquiringAndReleasing) else { return }
-        let framesMixed = _totalFramesMixed.load(ordering: .relaxed)
-        let mixCalls = _mixCallCount.load(ordering: .relaxed)
-        let prebufWaits = _prebufferWaits.load(ordering: .relaxed)
-        let underruns = _underrunCount.load(ordering: .relaxed)
-        log.notice("■ Stopping Icecast stream — SUMMARY: bytes=\(self.totalBytesReceived) pkts=\(self.totalPacketsReceived) decoded=\(self.totalPacketsDecoded) dropped=\(self.totalPacketsDropped) samplesDecoded=\(self.totalSamplesDecoded) framesMixed=\(framesMixed) mixCalls=\(mixCalls) prebufWaits=\(prebufWaits) underruns=\(underruns)")
+        log.info("Stopping Icecast stream: \(self.totalBytesReceived) bytes, \(self.totalPacketsDecoded) pkts decoded, \(self._totalFramesMixed.load(ordering: .relaxed)) frames mixed, \(self._underrunCount.load(ordering: .relaxed)) underruns")
 
         dataTask?.cancel()
         dataTask = nil
@@ -191,9 +174,6 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
     func mixInto(outputBufferList: UnsafeMutablePointer<AudioBufferList>, frameCount: Int) {
         guard isRunning.load(ordering: .relaxed) else { return }
 
-        let callCount = _mixCallCount.load(ordering: .relaxed) &+ 1
-        _mixCallCount.store(callCount, ordering: .relaxed)
-
         let available = ringBuffer.availableToRead
 
         // Prebuffer watermark: wait until enough data accumulates before starting,
@@ -201,9 +181,7 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
         if prebuffering.load(ordering: .relaxed) {
             if available >= prebufferThreshold {
                 prebuffering.store(false, ordering: .relaxed)
-                // Can't log from render thread — track transition via counter
             } else {
-                _prebufferWaits.store(_prebufferWaits.load(ordering: .relaxed) &+ 1, ordering: .relaxed)
                 return  // Still filling — output silence
             }
         } else if available == 0 {
@@ -238,13 +216,6 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
     // MARK: - AudioFileStream Callbacks
 
     fileprivate func handlePropertyChange(propertyID: AudioFileStreamPropertyID) {
-        // Log ALL property IDs for diagnostics (fourCC)
-        let c0 = Character(Unicode.Scalar((propertyID >> 24) & 0xFF)!)
-        let c1 = Character(Unicode.Scalar((propertyID >> 16) & 0xFF)!)
-        let c2 = Character(Unicode.Scalar((propertyID >> 8) & 0xFF)!)
-        let c3 = Character(Unicode.Scalar(propertyID & 0xFF)!)
-        log.notice("  AudioFileStream property: '\(c0)\(c1)\(c2)\(c3)' (0x\(String(propertyID, radix: 16)))")
-
         guard propertyID == kAudioFileStreamProperty_DataFormat else { return }
         guard let sid = streamID else { return }
 
@@ -258,12 +229,7 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
 
         inputFormat = format
         formatDiscovered = true
-        let fmtID = format.mFormatID
-        let f0 = Character(Unicode.Scalar((fmtID >> 24) & 0xFF)!)
-        let f1 = Character(Unicode.Scalar((fmtID >> 16) & 0xFF)!)
-        let f2 = Character(Unicode.Scalar((fmtID >> 8) & 0xFF)!)
-        let f3 = Character(Unicode.Scalar(fmtID & 0xFF)!)
-        log.notice("  ✓ Stream input format: \(format.mSampleRate) Hz, \(format.mChannelsPerFrame) ch, formatID='\(f0)\(f1)\(f2)\(f3)', bitsPerChan=\(format.mBitsPerChannel), bytesPerPacket=\(format.mBytesPerPacket), framesPerPacket=\(format.mFramesPerPacket)")
+        log.info("Stream format: \(format.mSampleRate) Hz, \(format.mChannelsPerFrame) ch")
 
         // Create audio converter: compressed → Float32 PCM
         var outFmt = outputFormat
@@ -275,7 +241,7 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
             return
         }
         self.converter = conv
-        log.notice("  ✓ AudioConverter created: \(format.mSampleRate)→\(self.outputFormat.mSampleRate) Hz, \(format.mChannelsPerFrame)→\(self.outputFormat.mChannelsPerFrame) ch")
+        log.info("AudioConverter created: \(format.mSampleRate)→\(self.outputFormat.mSampleRate) Hz")
     }
 
     fileprivate func handlePackets(
@@ -284,13 +250,7 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
         data: UnsafeRawPointer,
         descriptions: UnsafeMutablePointer<AudioStreamPacketDescription>?
     ) {
-        guard converter != nil, formatDiscovered else {
-            totalPacketsDropped += Int(packetCount)
-            if totalPacketsDropped <= 10 || totalPacketsDropped % 100 == 0 {
-                log.warning("  ⚠ Dropping \(packetCount) packets (converter=\(self.converter != nil), formatDiscovered=\(self.formatDiscovered)), total dropped=\(self.totalPacketsDropped)")
-            }
-            return
-        }
+        guard converter != nil, formatDiscovered else { return }
 
         // Accumulate packet data directly into the raw inputDataBuffer,
         // avoiding an intermediate Swift Data allocation + copy.
@@ -330,14 +290,10 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
     private func decodeAccumulatedPackets() {
         guard let converter = self.converter, !packetDescriptions.isEmpty else { return }
 
-        let inputPacketCount = packetDescriptions.count
-        totalPacketsReceived += inputPacketCount
-
         // Data already accumulated directly in inputDataBuffer — no copy needed.
         packetOffset = 0
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
 
-        var batchSamplesDecoded = 0
         var batchDecodeErrors = 0
 
         while packetOffset < packetDescriptions.count {
@@ -363,10 +319,8 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
             if outputPacketCount > 0 {
                 let sampleCount = Int(outputPacketCount) * outputChannels
                 let written = ringBuffer.write(from: decodeScratch, count: sampleCount)
-                batchSamplesDecoded += Int(outputPacketCount)
-                totalSamplesDecoded += Int(outputPacketCount)
                 if written < sampleCount {
-                    log.warning("  ⚠ Ring buffer overflow: tried \(sampleCount), wrote \(written)")
+                    log.debug("Ring buffer overflow: tried \(sampleCount), wrote \(written)")
                 }
             }
 
@@ -376,23 +330,13 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
             if status != noErr {
                 batchDecodeErrors += 1
                 if batchDecodeErrors <= 3 {
-                    log.warning("  ⚠ AudioConverterFillComplexBuffer error: \(status)")
+                    log.debug("AudioConverterFillComplexBuffer error: \(status)")
                 }
                 break
             }
         }
 
         totalPacketsDecoded += packetOffset
-
-        // Periodic summary (every ~100 calls ≈ 1 second at typical data rates)
-        if totalPacketsReceived > 0 && (totalPacketsReceived < 50 || totalPacketsReceived % 500 == 0) {
-            let available = ringBuffer.availableToRead
-            let isPrebuf = prebuffering.load(ordering: .relaxed)
-            let mixCalls = self._mixCallCount.load(ordering: .relaxed)
-            let prebufWaits = self._prebufferWaits.load(ordering: .relaxed)
-            let underruns = self._underrunCount.load(ordering: .relaxed)
-            log.notice("  📊 Decode stats: pktsIn=\(self.totalPacketsReceived) decoded=\(self.totalPacketsDecoded) dropped=\(self.totalPacketsDropped) samplesOut=\(self.totalSamplesDecoded) ringAvail=\(available) prebuf=\(isPrebuf) | render: mixCalls=\(mixCalls) prebufWaits=\(prebufWaits) underruns=\(underruns) framesMixed=\(self._totalFramesMixed.load(ordering: .relaxed))")
-        }
 
         // Reset for next batch (keep backing storage for reuse)
         inputDataWritePos = 0
@@ -451,12 +395,7 @@ extension IcecastStreamPlayer: URLSessionDataDelegate {
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
         if let http = response as? HTTPURLResponse {
             let contentType = http.value(forHTTPHeaderField: "Content-Type") ?? "unknown"
-            let icyName = http.value(forHTTPHeaderField: "icy-name") ?? ""
-            let icyBR = http.value(forHTTPHeaderField: "icy-br") ?? ""
-            log.notice("  HTTP response: \(http.statusCode), Content-Type=\(contentType, privacy: .public), icy-name=\(icyName, privacy: .public), icy-br=\(icyBR, privacy: .public)")
-            log.notice("  All headers: \(http.allHeaderFields.map { "\($0.key)=\($0.value)" }.joined(separator: ", "), privacy: .public)")
-        } else {
-            log.warning("  ⚠ Non-HTTP response: \(response.debugDescription, privacy: .public)")
+            log.info("Stream response: HTTP \(http.statusCode), type=\(contentType, privacy: .public)")
         }
         completionHandler(.allow)
     }
@@ -466,27 +405,21 @@ extension IcecastStreamPlayer: URLSessionDataDelegate {
 
         totalBytesReceived += data.count
 
-        // Log first few chunks + periodic summary
-        if totalBytesReceived <= 10000 || totalBytesReceived % 100000 < data.count {
-            log.notice("  HTTP data: +\(data.count) bytes (total \(self.totalBytesReceived)), formatDiscovered=\(self.formatDiscovered), converter=\(self.converter != nil)")
-        }
-
         data.withUnsafeBytes { rawBuf in
             guard let ptr = rawBuf.baseAddress else { return }
             let status = AudioFileStreamParseBytes(sid, UInt32(data.count), ptr, [])
             if status != noErr {
-                log.warning("  ⚠ AudioFileStreamParseBytes error: \(status)")
+                log.debug("AudioFileStreamParseBytes: \(status)")
             }
         }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if let error {
-            let nsErr = error as NSError
-            if nsErr.code == NSURLErrorCancelled { return }
-            log.error("  ✗ Stream error: \(nsErr.domain, privacy: .public) code=\(nsErr.code) \(error.localizedDescription, privacy: .public)")
+            if (error as NSError).code == NSURLErrorCancelled { return }
+            log.error("Stream error: \(error.localizedDescription, privacy: .public)")
         } else {
-            log.notice("  Stream completed normally (server closed connection)")
+            log.info("Stream completed normally")
         }
     }
 }
