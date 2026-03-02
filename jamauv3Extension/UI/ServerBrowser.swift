@@ -274,7 +274,7 @@ struct ServerBrowserView: View {
                 }
             }
         }
-        .frame(minWidth: 360, minHeight: 400)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             viewModel.onListenStart = onListenStart
             viewModel.onListenStop = onListenStop

@@ -61,6 +61,8 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
     public override func viewDidLoad() {
         super.viewDidLoad()
 
+        preferredContentSize = CGSize(width: 320, height: 480)
+
         // Accessing the `audioUnit` parameter prompts the AU to be created via createAudioUnit(with:)
         guard let audioUnit = self.audioUnit else {
             return

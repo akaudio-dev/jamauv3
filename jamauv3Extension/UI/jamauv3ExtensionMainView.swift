@@ -22,41 +22,45 @@ struct jamauv3ExtensionMainView: View {
         var id: Self { self }
     }
 
+    enum Tab { case chat, users }
+
     @State private var activeSheet: ActiveSheet?
+    @State private var selectedTab: Tab = .chat
     @State private var chatInput = ""
 
     var body: some View {
-        ZStack {
-            // Main content
-            mainContent
+        GeometryReader { geo in
+            ZStack {
+                // Main content
+                mainContent
 
-            // Inline overlays (sheets don't work in out-of-process AUv3)
-            if activeSheet == .connection {
-                connectionOverlay
-            } else if activeSheet == .serverBrowser {
-                ServerBrowserView(
-                    connectionSettings: connectionSettings,
-                    onSelectServer: { server in
-                        connectionSettings.serverName = server.host
-                        connectionSettings.port = server.port
-                        activeSheet = .connection
-                    },
-                    onDismiss: {
-                        activeSheet = nil
-                    },
-                    onListenStart: onListenStart,
-                    onListenStop: onListenStop,
-                    icecastPeakReader: icecastPeakReader
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                #if os(macOS)
-                .background(Color(nsColor: .windowBackgroundColor))
-                #else
-                .background(Color(uiColor: .systemBackground))
-                #endif
+                // Inline overlays (sheets don't work in out-of-process AUv3)
+                if activeSheet == .connection {
+                    connectionOverlay
+                } else if activeSheet == .serverBrowser {
+                    ServerBrowserView(
+                        connectionSettings: connectionSettings,
+                        onSelectServer: { server in
+                            connectionSettings.serverName = server.host
+                            connectionSettings.port = server.port
+                            activeSheet = .connection
+                        },
+                        onDismiss: {
+                            activeSheet = nil
+                        },
+                        onListenStart: onListenStart,
+                        onListenStop: onListenStop,
+                        icecastPeakReader: icecastPeakReader
+                    )
+                    #if os(macOS)
+                    .background(Color(nsColor: .windowBackgroundColor))
+                    #else
+                    .background(Color(uiColor: .systemBackground))
+                    #endif
+                }
             }
+            .frame(width: geo.size.width, height: geo.size.height)
         }
-        .frame(minWidth: 300, minHeight: 400)
     }
 
     private var mainContent: some View {
@@ -127,25 +131,34 @@ struct jamauv3ExtensionMainView: View {
 
             Divider()
 
-            // Chat terminal (fills available space)
-            chatTerminal
-
-            Divider()
-
-            // User gains (fixed height at bottom)
-            HStack(spacing: 0) {
-                let usersGroup: ObservableAUParameterGroup = parameterTree.users
-                ForEach(0..<usersGroup.parameters.count, id: \.self) { index in
-                    VerticalGainSlider(
-                        param: usersGroup.parameters[index],
-                        peakLevel: ninjamClient.userPeaks[index],
-                        username: ninjamClient.slotUsernames[index]
-                    )
+            // Tab content
+            switch selectedTab {
+            case .chat:
+                chatTerminal
+            case .users:
+                HStack(spacing: 0) {
+                    let usersGroup: ObservableAUParameterGroup = parameterTree.users
+                    ForEach(0..<usersGroup.parameters.count, id: \.self) { index in
+                        VerticalGainSlider(
+                            param: usersGroup.parameters[index],
+                            peakLevel: ninjamClient.userPeaks[index],
+                            username: ninjamClient.slotUsernames[index]
+                        )
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.vertical, 6)
+                .padding(.horizontal, 4)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .padding(.horizontal, 4)
+
+            // Tab picker (below chat/users content)
+            Picker("", selection: $selectedTab) {
+                Text("Chat").tag(Tab.chat)
+                Text("Users").tag(Tab.users)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
         }
     }
 
