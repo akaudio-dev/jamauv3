@@ -200,6 +200,7 @@ final class ServerBrowserViewModel {
 struct ServerBrowserView: View {
     @ObservedObject var connectionSettings: ConnectionSettings
     let onSelectServer: (NINJAMServerEntry) -> Void
+    let onJoinServer: (NINJAMServerEntry) -> Void
     let onDismiss: () -> Void
     var onListenStart: ((URL) -> Void)?
     var onListenStop: (() -> Void)?
@@ -227,6 +228,16 @@ struct ServerBrowserView: View {
             }
             .padding(.horizontal)
             .padding(.vertical, 10)
+
+            HStack(spacing: 8) {
+                Image(systemName: "person")
+                    .foregroundColor(.secondary)
+                TextField("Username", text: $connectionSettings.username)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 200)
+            }
+            .padding(.horizontal)
+            .padding(.bottom, 8)
 
             Divider()
 
@@ -261,6 +272,10 @@ struct ServerBrowserView: View {
                             onConnect: {
                                 viewModel.stopAutoRefresh()
                                 onSelectServer(server)
+                            },
+                            onJoin: {
+                                viewModel.stopAutoRefresh()
+                                onJoinServer(server)
                             }
                         )
                     }
@@ -293,6 +308,7 @@ struct ServerRowView: View {
     var peakLevel: Float = 0
     let onListen: () -> Void
     let onConnect: () -> Void
+    let onJoin: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -330,6 +346,13 @@ struct ServerRowView: View {
                 .buttonStyle(.plain)
 
                 Spacer()
+
+                Button(action: onJoin) {
+                    Image(systemName: "person.badge.plus")
+                        .font(.title3)
+                        .foregroundColor(.green)
+                }
+                .buttonStyle(.borderless)
 
                 if server.streamURL != nil {
                     Button(action: onListen) {

@@ -43,7 +43,11 @@ struct jamauv3ExtensionMainView: View {
                         onSelectServer: { server in
                             connectionSettings.serverName = server.host
                             connectionSettings.port = server.port
+                            connectionSettings.password = ""  // clear — public servers don't need passwords
                             activeSheet = .connection
+                        },
+                        onJoinServer: { server in
+                            handleJoinServer(server)
                         },
                         onDismiss: {
                             activeSheet = nil
@@ -60,6 +64,11 @@ struct jamauv3ExtensionMainView: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            .onChange(of: ninjamClient.isConnected) { _, connected in
+                if connected && activeSheet == .connection {
+                    activeSheet = nil
+                }
+            }
         }
     }
 
@@ -328,7 +337,20 @@ struct jamauv3ExtensionMainView: View {
                 username: connectionSettings.username,
                 password: connectionSettings.password
             )
-            activeSheet = nil
+            // Overlay stays open until connection succeeds (dismissed by onChange below)
         }
+    }
+
+    private func handleJoinServer(_ server: NINJAMServerEntry) {
+        guard !ninjamClient.isConnected else { return }
+        let username = connectionSettings.username.isEmpty ? "jamauv3-user" : connectionSettings.username
+
+        onListenStop?()
+
+        // Connect with empty password (triggers "anonymous:" prefix for public servers)
+        // Don't modify connectionSettings — private server credentials stay intact for auto-reconnect
+        ninjamClient.connect(host: server.host, port: server.portNumber,
+                             username: username, password: "")
+        activeSheet = nil
     }
 }

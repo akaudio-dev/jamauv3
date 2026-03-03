@@ -180,6 +180,7 @@ final class NINJAMClient: ObservableObject {
         self.username = username
         self.password = password
         self.serverInfo = ServerInfo(host: host, port: port)
+        logger.info("Connecting to \(host, privacy: .public):\(port, privacy: .public) as \(username, privacy: .public)")
         setState(.connecting)
 
         let endpoint = NWEndpoint.hostPort(
@@ -211,6 +212,7 @@ final class NINJAMClient: ObservableObject {
 
     /// Disconnect from the server
     func disconnect() {
+        logger.info("Disconnecting (state: \(String(describing: self.state), privacy: .public))")
         // Stop timers
         keepaliveTimer?.invalidate()
         keepaliveTimer = nil
@@ -229,12 +231,12 @@ final class NINJAMClient: ObservableObject {
     private func handleConnectionStateChange(_ newState: NWConnection.State) {
         switch newState {
         case .ready:
-            logger.debug("TCP connection established")
+            logger.info("TCP connection established")
             setState(.awaitingChallenge)
             startReceiving()
 
         case .failed(let error):
-            logger.error("Connection failed: \(error.localizedDescription)")
+            logger.error("Connection failed: \(error.localizedDescription, privacy: .public)")
             setState(.error("Connection failed: \(error.localizedDescription)"))
 
         case .cancelled:
@@ -319,7 +321,7 @@ final class NINJAMClient: ObservableObject {
     // MARK: - Message Handling
 
     private func handleMessage(type: UInt8, payload: Data) {
-        logger.debug("Received message type: 0x\(String(type, radix: 16)), payload: \(payload.count) bytes")
+        logger.debug("Received message type: 0x\(String(type, radix: 16), privacy: .public), payload: \(payload.count, privacy: .public) bytes")
 
         switch type {
         case NINJAMServerMessageType.authChallenge.rawValue:
@@ -367,15 +369,17 @@ final class NINJAMClient: ObservableObject {
         }
 
         keepaliveInterval = challenge.keepaliveInterval > 0 ? challenge.keepaliveInterval : 3
-        let username = self.username
         let password = self.password
+
+        // NINJAM protocol: prefix username with "anonymous:" when password is empty (public servers)
+        let authUsername = password.isEmpty ? "anonymous:\(self.username)" : self.username
 
         // Handle license agreement - for now, auto-agree
         let agreesToLicense = true
 
         // Build and send auth response
         let authUser = ClientAuthUser.create(
-            username: username,
+            username: authUsername,
             password: password,
             challenge: challenge.challenge,
             agreesToLicense: agreesToLicense
@@ -384,7 +388,7 @@ final class NINJAMClient: ObservableObject {
         setState(.authenticating)
         send(data: authUser.buildMessage())
 
-        logger.debug("Sent auth response for user: \(username)")
+        logger.debug("Sent auth response for user: \(authUsername, privacy: .public)")
     }
 
     private func handleAuthReply(_ payload: Data) {
@@ -405,14 +409,14 @@ final class NINJAMClient: ObservableObject {
             }
 
             setState(.connected)
-            logger.debug("Authentication successful!")
+            logger.info("Authentication successful!")
 
             // Send our channel info
             sendChannelInfo()
 
         } else {
             let errorMsg = reply.errorMessage ?? "Authentication failed"
-            logger.error("Auth failed: \(errorMsg)")
+            logger.error("Auth failed: \(errorMsg, privacy: .public)")
             setState(.error(errorMsg))
             disconnect()
         }
@@ -524,7 +528,7 @@ final class NINJAMClient: ObservableObject {
 
     private func send(data: Data) {
         guard let connection = connection else {
-            logger.error("send: no connection! data=\(data.count)B")
+            logger.debug("send: no connection (disconnected), dropping \(data.count)B")
             return
         }
         connection.send(content: data, completion: .contentProcessed { [weak self] error in

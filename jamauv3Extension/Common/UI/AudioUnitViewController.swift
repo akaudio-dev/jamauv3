@@ -365,7 +365,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
 
 extension AudioUnitViewController: NINJAMClientDelegate {
     func client(_ client: NINJAMClient, didChangeState state: NINJAMConnectionState) {
-        log.info("didChangeState: \(String(describing: state))")
+        log.info("didChangeState: \(String(describing: state), privacy: .public)")
         switch state {
         case .connected:
             // Start interval capture once we have config (triggered by didReceiveConfig)
