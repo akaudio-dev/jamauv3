@@ -88,6 +88,26 @@ struct jamauv3ExtensionMainView: View {
                     Text("\(ninjamClient.currentBeat + 1)/\(ninjamClient.bpi)")
                         .font(.callout.monospacedDigit().bold())
                         .fixedSize()
+
+                    Button(action: { connectionSettings.metronomeEnabled.toggle() }) {
+                        Image(systemName: connectionSettings.metronomeEnabled
+                              ? "metronome.fill" : "metronome")
+                            .font(.callout)
+                            .foregroundColor(connectionSettings.metronomeEnabled ? .primary : .secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .contextMenu {
+                        Button {
+                            connectionSettings.metronomeBeat1Only = false
+                        } label: {
+                            Label("All Beats", systemImage: connectionSettings.metronomeBeat1Only ? "" : "checkmark")
+                        }
+                        Button {
+                            connectionSettings.metronomeBeat1Only = true
+                        } label: {
+                            Label("Beat 1 Only", systemImage: connectionSettings.metronomeBeat1Only ? "checkmark" : "")
+                        }
+                    }
                 }
 
                 Spacer(minLength: 8)

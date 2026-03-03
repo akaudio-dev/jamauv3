@@ -77,6 +77,18 @@ final class DSPKernel: @unchecked Sendable {
     private var wasTransportMoving: Bool = false
     private var previousBeatPosition: Double = 0
     let needsInitialSnap = Atomic<Bool>(false)
+
+    // MARK: - Metronome Config (main thread writes, render thread reads)
+
+    let metronomeEnabled = Atomic<UInt8>(0)
+    let metronomeBeat1Only = Atomic<UInt8>(0)
+
+    // Metronome render state (render thread only)
+    private var metronomeSamplePos: Int = 0
+    private var clickSamplesRemaining: Int = 0
+    private var clickPhase: Double = 0.0
+    private var clickOmega: Double = 0.0
+    private var clickIsBeat1: Bool = false
     
     // MARK: - Initialization
     
@@ -202,6 +214,7 @@ final class DSPKernel: @unchecked Sendable {
 
         intervalBuffer?.snapSamplePosition(clampedTarget)
         remoteAudioMixer?.snapSamplePosition(clampedTarget)
+        snapMetronomePosition(clampedTarget)
 
         // Also reset drift correction to base after a snap
         correctedIntervalLength.store(baseIntervalLength, ordering: .relaxed)
@@ -234,6 +247,70 @@ final class DSPKernel: @unchecked Sendable {
         // Clamp to ±256 samples to avoid transport jump artifacts
         let correction = max(-256, min(256, -driftSamples))
         correctedIntervalLength.store(baseIntervalLength + correction, ordering: .relaxed)
+    }
+
+    // MARK: - Metronome
+
+    /// Snap metronome position to align with beat grid (called from snapToBeatGridIfNeeded).
+    private func snapMetronomePosition(_ newPosition: Int) {
+        metronomeSamplePos = newPosition
+        clickSamplesRemaining = 0
+    }
+
+    /// Mix metronome clicks into the output buffer. RT-safe: no allocations, no locks.
+    private func mixMetronome(outputBufferList: UnsafeMutablePointer<AudioBufferList>,
+                              frameCount: Int,
+                              intervalLength: Int) {
+        guard metronomeEnabled.load(ordering: .relaxed) != 0 else { return }
+        guard intervalLength > 0, ninjamBPI > 0, sampleRate > 0 else { return }
+
+        let beat1Only = metronomeBeat1Only.load(ordering: .relaxed) != 0
+        let samplesPerBeat = intervalLength / ninjamBPI
+        guard samplesPerBeat > 0 else { return }
+
+        let clickDuration = Int(sampleRate) / 100  // ~10ms, matches njclient.cpp
+        let gain: Float = 0.5
+
+        let buffers = UnsafeMutableAudioBufferListPointer(outputBufferList)
+        guard buffers.count >= 1,
+              let outL = buffers[0].mData?.assumingMemoryBound(to: Float.self) else { return }
+        let outR = buffers.count >= 2 ? buffers[1].mData?.assumingMemoryBound(to: Float.self) : nil
+
+        for i in 0..<frameCount {
+            let pos = metronomeSamplePos
+            let beatIndex = pos / samplesPerBeat
+            let posInBeat = pos % samplesPerBeat
+
+            // Detect beat start
+            if posInBeat == 0 {
+                let isBeat1 = (beatIndex == 0)
+                let shouldClick = isBeat1 || !beat1Only
+
+                if shouldClick {
+                    clickSamplesRemaining = clickDuration
+                    clickPhase = 0.0
+                    clickIsBeat1 = isBeat1
+                    let freq = isBeat1 ? 1000.0 : 800.0
+                    clickOmega = 2.0 * .pi * freq / sampleRate
+                }
+            }
+
+            // Generate click sample
+            if clickSamplesRemaining > 0 {
+                let t = Double(clickDuration - clickSamplesRemaining) / Double(clickDuration)
+                let envelope = Float(exp(-3.0 * t))
+                let amplitude: Float = clickIsBeat1 ? gain : gain * 0.25
+                let sample = Float(sin(clickPhase)) * envelope * amplitude
+
+                outL[i] += sample
+                outR?[i] += sample
+
+                clickPhase += clickOmega
+                clickSamplesRemaining -= 1
+            }
+
+            metronomeSamplePos = (pos + 1) % intervalLength
+        }
     }
 
     // MARK: - DSP Processing
@@ -309,8 +386,11 @@ final class DSPKernel: @unchecked Sendable {
         }
 
         // At interval boundary, compute drift correction for the NEXT interval
-        if boundaryHit, tempo > 0 {
-            computeDriftCorrection(hostBPM: tempo, hostBeat: beatPosition)
+        if boundaryHit {
+            metronomeSamplePos = 0
+            if tempo > 0 {
+                computeDriftCorrection(hostBPM: tempo, hostBeat: beatPosition)
+            }
         }
 
         // Zero output buffers — only remote audio and Icecast will be heard.
@@ -320,6 +400,11 @@ final class DSPKernel: @unchecked Sendable {
             guard let outputData = outputBuffers[channelIndex].mData else { continue }
             memset(outputData, 0, Int(frameCount) * MemoryLayout<Float>.size)
         }
+
+        // Mix metronome click track
+        mixMetronome(outputBufferList: outputBufferList,
+                     frameCount: Int(frameCount),
+                     intervalLength: currentIntervalLength)
 
         // Mix remote users' audio into the output
         // Reset per-user peak scratch buffer, collect peaks during mix, then publish to atomics

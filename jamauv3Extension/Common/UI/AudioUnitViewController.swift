@@ -26,6 +26,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
     private var icecastPlayer: IcecastStreamPlayer?
     private var diagnosticTask: Task<Void, Never>?
     private var meterTask: Task<Void, Never>?
+    private var metronomeCancellables = Set<AnyCancellable>()
 
 	/* iOS View lifcycle
 	public override func viewWillAppear(_ animated: Bool) {
@@ -93,7 +94,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
 			// Notify when host negotiates a different sample rate (e.g., DAW sample rate change)
 			audioUnit.onSampleRateChange = { [weak self] newRate in
 				guard let self else { return }
-				log.info("Host sample rate changed to \(newRate, privacy: .public) Hz")
+				log.debug("Host sample rate changed to \(newRate) Hz")
 				if self.intervalBuffer != nil {
 					self.updateIntervalConfig()
 				}
@@ -130,7 +131,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
             log.error("startIntervalCapture: invalid config bpm=\(bpm) bpi=\(bpi)")
             return
         }
-        log.info("startIntervalCapture: sampleRate=\(sampleRate) bpm=\(bpm) bpi=\(bpi)")
+        log.debug("startIntervalCapture: sampleRate=\(sampleRate) bpm=\(bpm) bpi=\(bpi)")
 
         let config = IntervalConfig(bpm: bpm, bpi: bpi, sampleRate: sampleRate)
         let buffer = IntervalBuffer(config: config, stereo: connectionSettings.stereo)
@@ -151,6 +152,23 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         self.intervalBuffer = buffer
         buffer.start()
 
+        // Wire metronome settings to kernel
+        let kernel = auUnit.kernel
+        kernel.metronomeEnabled.store(connectionSettings.metronomeEnabled ? 1 : 0, ordering: .releasing)
+        kernel.metronomeBeat1Only.store(connectionSettings.metronomeBeat1Only ? 1 : 0, ordering: .releasing)
+
+        connectionSettings.$metronomeEnabled
+            .sink { [weak kernel] enabled in
+                kernel?.metronomeEnabled.store(enabled ? 1 : 0, ordering: .releasing)
+            }
+            .store(in: &metronomeCancellables)
+
+        connectionSettings.$metronomeBeat1Only
+            .sink { [weak kernel] beat1Only in
+                kernel?.metronomeBeat1Only.store(beat1Only ? 1 : 0, ordering: .releasing)
+            }
+            .store(in: &metronomeCancellables)
+
         startRemoteAudioMixer(config: config, kernel: auUnit.kernel)
 
         // Periodic diagnostic: log mixer pipeline counters every 5 seconds
@@ -161,6 +179,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
 
     /// Stop interval capture on disconnect
     private func stopIntervalCapture() {
+        metronomeCancellables.removeAll()
         intervalBuffer?.stop()
         if let auUnit = audioUnit as? jamauv3ExtensionAudioUnit {
             auUnit.kernel.intervalBuffer = nil
@@ -277,7 +296,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         stopIcecastListener()
         guard let auUnit = audioUnit as? jamauv3ExtensionAudioUnit else { return }
         let sampleRate = auUnit.kernel.sampleRate
-        log.info("Starting Icecast listener: \(url.absoluteString, privacy: .public) @ \(sampleRate) Hz")
+        log.debug("Starting Icecast listener: \(url.absoluteString) @ \(sampleRate) Hz")
         let player = IcecastStreamPlayer(sampleRate: sampleRate)
         auUnit.kernel.icecastPlayer = player
         self.icecastPlayer = player
@@ -350,7 +369,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
               !connectionSettings.username.isEmpty,
               let port = UInt16(connectionSettings.port) else { return }
 
-        log.info("Auto-reconnecting to \(self.connectionSettings.serverName, privacy: .public):\(port)")
+        log.debug("Auto-reconnecting to \(self.connectionSettings.serverName):\(port)")
         ninjamClient.connect(
             host: connectionSettings.serverName,
             port: port,
@@ -365,7 +384,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
 
 extension AudioUnitViewController: NINJAMClientDelegate {
     func client(_ client: NINJAMClient, didChangeState state: NINJAMConnectionState) {
-        log.info("didChangeState: \(String(describing: state), privacy: .public)")
+        log.debug("didChangeState: \(String(describing: state))")
         switch state {
         case .connected:
             // Start interval capture once we have config (triggered by didReceiveConfig)
@@ -378,7 +397,7 @@ extension AudioUnitViewController: NINJAMClientDelegate {
     }
 
     func client(_ client: NINJAMClient, didReceiveConfig bpm: Int, bpi: Int) {
-        log.info("didReceiveConfig: bpm=\(bpm) bpi=\(bpi) intervalBuffer=\(self.intervalBuffer != nil ? "exists" : "nil") isConnected=\(client.isConnected)")
+        log.debug("didReceiveConfig: bpm=\(bpm) bpi=\(bpi)")
         if intervalBuffer != nil {
             // Already capturing — update config
             updateIntervalConfig()

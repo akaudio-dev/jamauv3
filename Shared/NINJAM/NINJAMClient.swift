@@ -212,7 +212,7 @@ final class NINJAMClient: ObservableObject {
 
     /// Disconnect from the server
     func disconnect() {
-        logger.info("Disconnecting (state: \(String(describing: self.state), privacy: .public))")
+        logger.debug("Disconnecting (state: \(String(describing: self.state)))")
         // Stop timers
         keepaliveTimer?.invalidate()
         keepaliveTimer = nil
@@ -231,7 +231,6 @@ final class NINJAMClient: ObservableObject {
     private func handleConnectionStateChange(_ newState: NWConnection.State) {
         switch newState {
         case .ready:
-            logger.info("TCP connection established")
             setState(.awaitingChallenge)
             startReceiving()
 
@@ -321,8 +320,6 @@ final class NINJAMClient: ObservableObject {
     // MARK: - Message Handling
 
     private func handleMessage(type: UInt8, payload: Data) {
-        logger.debug("Received message type: 0x\(String(type, radix: 16), privacy: .public), payload: \(payload.count, privacy: .public) bytes")
-
         switch type {
         case NINJAMServerMessageType.authChallenge.rawValue:
             handleAuthChallenge(payload)
@@ -343,7 +340,7 @@ final class NINJAMClient: ObservableObject {
             handleDownloadIntervalWrite(payload)
 
         case NINJAMServerMessageType.keepalive.rawValue:
-            logger.debug("Keepalive received")
+            break
 
         case NINJAMClientMessageType.chatMessage.rawValue:
             handleChatMessage(payload)
@@ -387,8 +384,6 @@ final class NINJAMClient: ObservableObject {
 
         setState(.authenticating)
         send(data: authUser.buildMessage())
-
-        logger.debug("Sent auth response for user: \(authUsername, privacy: .public)")
     }
 
     private func handleAuthReply(_ payload: Data) {
@@ -404,12 +399,7 @@ final class NINJAMClient: ObservableObject {
                 serverInfo?.effectiveUsername = effectiveUsername
             }
 
-            if let effectiveUsername = reply.effectiveUsername {
-                logger.debug("Server assigned username: \(effectiveUsername)")
-            }
-
             setState(.connected)
-            logger.info("Authentication successful!")
 
             // Send our channel info
             sendChannelInfo()
@@ -436,8 +426,6 @@ final class NINJAMClient: ObservableObject {
         bpm = newBpm
         bpi = newBpi
 
-        logger.debug("Config: BPM=\(config.beatsPerMinute), BPI=\(config.beatsPerInterval), interval=\(config.intervalDuration)s")
-
         startIntervalTimer()
         delegate?.client(self, didReceiveConfig: newBpm, bpi: newBpi)
     }
@@ -446,11 +434,6 @@ final class NINJAMClient: ObservableObject {
         guard let userInfo = ServerUserInfoChangeNotify(data: payload) else {
             logger.error("Failed to parse user info change")
             return
-        }
-
-        logger.debug("User info update: \(userInfo.channels.count) channels")
-        for channel in userInfo.channels {
-            logger.debug("  \(channel.username)/\(channel.channelName) active=\(channel.isActive)")
         }
 
         // Subscribe to all active users' channels so the server sends us their audio
@@ -476,8 +459,6 @@ final class NINJAMClient: ObservableObject {
         }
         let userMask = ClientSetUserMask(subscriptions: subscriptions)
         send(data: userMask.buildMessage())
-
-        logger.debug("Subscribed to \(subscriptions.count) users: \(subscriptions.map { "\($0.username)(0x\(String($0.channelMask, radix: 16)))" }.joined(separator: ", "))")
     }
 
     private func handleDownloadIntervalBegin(_ payload: Data) {
@@ -485,8 +466,6 @@ final class NINJAMClient: ObservableObject {
             logger.error("Failed to parse download interval begin")
             return
         }
-
-        logger.debug("Audio begin: \(begin.username) ch\(begin.channelIndex) size=\(begin.estimatedSize)")
 
         delegate?.client(self, didReceiveAudioBegin: begin.guid, username: begin.username, channelIndex: Int(begin.channelIndex), fourCC: begin.fourCC)
     }
@@ -504,21 +483,6 @@ final class NINJAMClient: ObservableObject {
         guard let chat = ServerChatMessage(data: payload) else {
             logger.error("Failed to parse chat message")
             return
-        }
-
-        switch chat.messageType {
-        case .message(let from, let text):
-            logger.debug("Chat from \(from): \(text)")
-        case .privateMessage(let from, let text):
-            logger.debug("PM from \(from): \(text)")
-        case .topicChange(let topic):
-            logger.debug("Topic: \(topic)")
-        case .join(let username):
-            logger.debug("\(username) joined")
-        case .part(let username):
-            logger.debug("\(username) left")
-        case .unknown(let params):
-            logger.debug("Unknown chat: \(params)")
         }
 
         delegate?.client(self, didReceiveChatMessage: chat)
@@ -550,8 +514,6 @@ final class NINJAMClient: ObservableObject {
 
         let channelInfo = ClientSetChannelInfo(channels: channelsToSend)
         send(data: channelInfo.buildMessage())
-
-        logger.debug("Sent channel info: \(channelsToSend.map { $0.name })")
     }
 
     /// Send a chat message. Text starting with '/' is sent as an ADMIN command.
@@ -598,7 +560,6 @@ final class NINJAMClient: ObservableObject {
         // Send keepalive if we haven't sent anything recently
         if now.timeIntervalSince(lastSendTime) >= TimeInterval(keepaliveInterval) {
             send(data: KeepaliveMessage.buildMessage())
-            logger.debug("Sent keepalive")
         }
 
         // Check for timeout (3x keepalive interval without receiving)

@@ -31,7 +31,7 @@
 
 ## Current Status
 
-All core features are implemented and working: NINJAM protocol (connect, auth, chat, audio upload/download), bidirectional OGG Vorbis audio (IntervalBuffer upload + RemoteAudioMixer download), host tempo sync with drift correction and transport snap, Icecast listener mode, server browser, per-user level meters, stereo mode, chat terminal, auto-reconnect, compact top bar UI, XPC rate-limit throttling, iOS/iPadOS support (tested on iPad Pro), deferred engine start for iOS battery savings, no mic passthrough (output = remote audio + Icecast only). 66 tests pass (protocol, E2E, codec, memory, level preservation) including with TSan.
+All core features are implemented and working: NINJAM protocol (connect, auth, chat, audio upload/download), bidirectional OGG Vorbis audio (IntervalBuffer upload + RemoteAudioMixer download), host tempo sync with drift correction and transport snap, Icecast listener mode, server browser with Join button for public servers, metronome (beat 1 / all beats, render-thread sine synthesis), per-user level meters, stereo mode, chat terminal, auto-reconnect, compact top bar UI, XPC rate-limit throttling, iOS/iPadOS support (tested on iPad Pro), deferred engine start for iOS battery savings, no mic passthrough (output = remote audio + metronome + Icecast only). 77 tests pass (protocol, E2E, codec, memory, level preservation) including with TSan.
 
 ### Interval Buffer Architecture (Upload)
 ```
@@ -111,9 +111,7 @@ User reports remote audio requires ~164% gain to match the passthrough signal le
 ## Next Steps (Priority Order)
 
 ### 1. Integration (High Priority)
-- Join public servers from server browser (connect button per server row, auto-fill credentials)
 - Investigate signal level discrepancy (see Known Issues above)
-- Implement metronome (click on beat 1 / all beats, render thread)
 - Progress indicator for first interval — show buffering/waiting state when joining a NINJAM session or starting Icecast listening, before audio begins playing
 
 ### 2. Polish (Medium Priority)
@@ -143,7 +141,8 @@ User reports remote audio requires ~164% gain to match the passthrough signal le
 - **Upload messages:** `ClientUploadIntervalBegin` (0x83, fourCC=`0x7647474F` for OGG, 0 for silence) + `ClientUploadIntervalWrite` (0x84, flags bit 0 = end of interval)
 - **IntervalConfig:** `IntervalConfig(bpm:bpi:sampleRate:)` → `intervalLengthInSamples` (e.g. 120 BPM, 16 BPI, 44100 Hz = 352800 samples)
 - **AU type:** `aumf` (Music Effect) — receives audio + MIDI, enables tempo/transport sync
-- **Render block:** Pulls input directly into the output buffer for in-place processing (`pullBlock(..., outputData)`). Do NOT use a separate BufferedInputBus for audio — hosts (e.g. Ableton) return `mDataByteSize=0` when pulling into a separate buffer. `channelCapabilities = [-1, -1]` (any matching N-in/N-out). `canProcessInPlace = true`. Default format uses hardware sample rate (CoreAudio on macOS, AVAudioSession on iOS); `onSampleRateChange` callback reconfigures IntervalBuffer + RemoteAudioMixer on mid-session rate changes. **No passthrough**: output buffers are zeroed (not copied from input) to prevent mic→speaker feedback — output contains only remote audio and Icecast. Input is still captured by IntervalBuffer for NINJAM upload
+- **Render block:** Pulls input directly into the output buffer for in-place processing (`pullBlock(..., outputData)`). Do NOT use a separate BufferedInputBus for audio — hosts (e.g. Ableton) return `mDataByteSize=0` when pulling into a separate buffer. `channelCapabilities = [-1, -1]` (any matching N-in/N-out). `canProcessInPlace = true`. Default format uses hardware sample rate (CoreAudio on macOS, AVAudioSession on iOS); `onSampleRateChange` callback reconfigures IntervalBuffer + RemoteAudioMixer on mid-session rate changes. **No passthrough**: output buffers are zeroed (not copied from input) to prevent mic→speaker feedback — output contains only remote audio, metronome, and Icecast. Input is still captured by IntervalBuffer for NINJAM upload
+- **Metronome:** RT-safe sine click synthesis in `DSPKernel.mixMetronome()`. Beat 1: 1000 Hz, full gain. Other beats: 800 Hz, 0.25× gain. Duration: `sampleRate/100` (~10ms) with exponential decay envelope. Tracks own `metronomeSamplePos` (render-thread-only Int), synced via `boundaryHit` reset and transport snap. Config via `Atomic<UInt8>` flags (`metronomeEnabled`, `metronomeBeat1Only`) written from main thread via Combine subscribers. UI: metronome button in top bar (tap toggle, context menu for mode). Settings persisted in `ConnectionSettings`
 - **`needsAudio` parameter:** AU parameter at address 100 (boolean). Extension sets to 1.0 when NINJAM connected or Icecast listening, 0.0 when idle. On iOS, host observes this and starts/stops `AVAudioEngine` on demand (500ms debounce on stop). On macOS, engine runs immediately. Defined in `jamauv3ExtensionParameterAddresses.h`, handled in DSPKernel, set by `AudioUnitViewController.updateNeedsAudio()`, observed by `SimplePlayEngine.observeNeedsAudio()`
 - **Musical context:** `DSPKernel.musicalContextBlock` reads host tempo + beat position every render callback. `DSPKernel.transportStateBlock` reads transport moving/stopped state. Both wired in `allocateRenderResources()`. Tempo/beat stored in `hostTempo`/`hostBeatPosition` atomics (render→main thread). Used for drift correction and transport snap
 - **Drift correction:** `DSPKernel.computeDriftCorrection()` compares host beat position to nearest BPI multiple at each interval boundary. Only active when host BPM ≈ NINJAM BPM (within 0.5). Adjusts `correctedIntervalLength` by up to ±256 samples. Both IntervalBuffer and RemoteAudioMixer receive the corrected length

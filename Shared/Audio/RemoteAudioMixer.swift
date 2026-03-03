@@ -234,7 +234,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
         // Evict stale download for this channel if the previous interval's isEnd was missed
         if let oldGUID = channelCurrentGUID[key] {
             if activeDownloads.removeValue(forKey: oldGUID) != nil {
-                logger.warning("Evicted stale download for \(username, privacy: .public)/\(channelIndex)")
+                logger.debug("Evicted stale download for \(username)/\(channelIndex)")
             }
         }
         channelCurrentGUID[key] = guid
