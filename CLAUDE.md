@@ -31,36 +31,7 @@
 
 ## Current Status
 
-**Working:**
-- ✅ NINJAM client: connect, authenticate, keepalive, receive messages
-- ✅ Protocol: all message types (auth, config, user info, chat, audio download/upload)
-- ✅ SwiftUI UI with connection settings + interval timing (BPM/BPI, beat counter, progress bar)
-- ✅ OGG Vorbis **encoding** and **decoding** (libvorbis via CVorbis/COgg modules from swift-vorbis/swift-ogg packages)
-- ✅ Pure Swift DSP kernel + lock-free CircularBuffer (Synchronization.Atomic)
-- ✅ **Interval Buffer System**: sample-accurate capture, incremental OGG encoding, streaming upload
-- ✅ **Remote Audio Mixer**: receives OGG from remote users, decodes to PCM, double-buffered playback with RT-safe mixing
-- ✅ **Bidirectional audio**: local audio captured and sent to server, remote audio received and mixed into output
-- ✅ AudioUnitViewController wires IntervalBuffer + RemoteAudioMixer ↔ NINJAMClient (auto start/stop/config update)
-- ✅ **Host Tempo Sync**: reads host musical context (tempo, beat position) every render callback, computes drift at interval boundaries, corrects next interval length ±256 samples. Both IntervalBuffer and RemoteAudioMixer receive the corrected length for synchronized boundaries
-- ✅ **Transport Snap**: detects DAW transport start, seek, and initial NINJAM connect — snaps `samplePosition` in both IntervalBuffer and RemoteAudioMixer so interval boundaries align with BPI-multiple beats on the DAW grid. Uses `transportStateBlock` with beat-position-change fallback
-- ✅ **HUD overlay**: server topic, host BPM with mismatch warning, chat messages (join/part/message/topic, capped at 50 entries)
-- ✅ **Stereo mode**: configurable mono/stereo capture+playback (ConnectionSettings toggle, persisted to UserDefaults)
-- ✅ **Chat terminal**: send+receive messages, auto-scroll, server topic bar
-- ✅ **Auto-reconnect**: reconnects to saved server on AU load (no UI required)
-- ✅ **Memory leak fix**: stale GUID eviction in RemoteAudioMixer prevents unbounded activeDownloads growth
-- ✅ **Per-user level meters**: 4px green/red peak meters next to each gain slider, ~15 Hz update with exponential decay, real usernames from server replace "User N" labels. Peaks measured in `mixInto()` (post-gain), collected via DSPKernel-owned scratch buffer, published to atomic storage after render callback — ensures meters are tied to actual output timing
-- ✅ **Dynamic host audio format**: AU declares default format matching hardware sample rate (CoreAudio on macOS, AVAudioSession on iOS). Detects sample rate changes across `allocateRenderResources` cycles and reconfigures IntervalBuffer + RemoteAudioMixer. Peak buffers survive dealloc/realloc cycles
-- ✅ **Compact top bar UI**: single horizontal strip — `(BPM/BPI)(progress bar)(beat/bpi) ... (● server:port)(disconnect)` when connected, `(○ status)(browse)(connect)` when disconnected. Saves vertical space vs the old stacked layout
-- ✅ **Server browser**: fetches public server list from `ninbot.com/app/servers.php`, auto-refreshes every 60s. Shows server name, BPM, BPI, user count, connected usernames. Sorted by user count then priority. Server selection populates connection dialog. File: `jamauv3Extension/UI/ServerBrowser.swift`
-- ✅ **Connection overlay**: replaced `.sheet` with inline ZStack overlay (sheets don't work in out-of-process AUv3)
-- ✅ **XPC rate-limit fixes**: reduced interval timer from 30 Hz → 5 Hz, meter timer from 15 Hz → 5 Hz, quantized progress updates, batched peak/username publishes, removed persistent KVO on `allParameterValues`, removed debug print in parameter setter. Prevents XPC throttling in out-of-process AU
-- ✅ **Host app improvements**: loads AU in-process (`.loadInProcess` on macOS, default `[]` on iOS — avoids XPC overhead for test host), Ctrl+W close shortcut (macOS), audio device checks (skip engine on headless Mac, skip input node if no mic), audio session activation before graph setup on iOS, format validation guard on input node
-- ✅ **iOS/iPadOS support**: builds and runs on real iPad (tested on iPad Pro 11-inch 4th gen). Platform-conditional fixes: `import CoreAudio` for `UnsafeMutableAudioBufferListPointer`, `Color(uiColor: .systemBackground)` replacing `nsColor`, `AVAudioSession` activation before `AVAudioEngine` graph wiring, `.loadInProcess` → `[]` on iOS, `NSApplication` commands guarded with `#if os(macOS)`, CoreMIDI setup skipped on iOS (MIDIClientCreateWithBlock hangs on XPC)
-- ✅ **Deferred engine start (iOS battery optimization)**: `needsAudio` AU parameter (address 100, boolean) signals host whether extension needs audio processing. Extension sets to 1.0 on NINJAM connect or Icecast listen, 0.0 on disconnect/stop. Host on iOS observes parameter and starts/stops `AVAudioEngine` on demand with 500ms debounce. macOS unchanged (engine always on). Saves battery when app is idle on iOS
-- ✅ **No mic passthrough**: DSPKernel zeros output buffers instead of copying input through. Prevents mic→speaker feedback on iOS. Input still captured by IntervalBuffer for NINJAM upload. Output contains only remote audio (RemoteAudioMixer) and Icecast streams
-- ✅ **Log level cleanup**: routine protocol/connection messages demoted from `.info` to `.debug` to reduce noise
-- ✅ **Icecast listener mode**: listen to public NINJAM servers without connecting. Manual decode pipeline: `URLSession` → `AudioFileStream` (MP3 parsing) → `AudioConverterFillComplexBuffer` (decode to Float32 PCM) → `CircularBuffer` → render thread `mixInto()`. Works in out-of-process AUv3 where AVPlayer cannot produce audio. Prebuffer watermark (128000 samples, matching JamTaba's `BUFFER_SIZE`) eliminates glitches from network jitter. Level meter in server browser UI (~15 Hz, exponential decay). File: `jamauv3Extension/DSP/IcecastStreamPlayer.swift`
-- ✅ Tests: protocol parsing, E2E auth, OGG encode/decode, interval serialization, remote mixer, memory leak detection, **level preservation** (66 tests pass). Memory leak tests use TSan-aware thresholds (`memoryThresholdMultiplier` in TestHelpers.swift) — pass with both `-enableThreadSanitizer YES` and without
+All core features are implemented and working: NINJAM protocol (connect, auth, chat, audio upload/download), bidirectional OGG Vorbis audio (IntervalBuffer upload + RemoteAudioMixer download), host tempo sync with drift correction and transport snap, Icecast listener mode, server browser, per-user level meters, stereo mode, chat terminal, auto-reconnect, compact top bar UI, XPC rate-limit throttling, iOS/iPadOS support (tested on iPad Pro), deferred engine start for iOS battery savings, no mic passthrough (output = remote audio + Icecast only). 66 tests pass (protocol, E2E, codec, memory, level preservation) including with TSan.
 
 ### Interval Buffer Architecture (Upload)
 ```
@@ -140,59 +111,29 @@ User reports remote audio requires ~164% gain to match the passthrough signal le
 ## Next Steps (Priority Order)
 
 ### 1. Integration (High Priority)
+- Join public servers from server browser (connect button per server row, auto-fill credentials)
 - Investigate signal level discrepancy (see Known Issues above)
 - Implement metronome (click on beat 1 / all beats, render thread)
+- Progress indicator for first interval — show buffering/waiting state when joining a NINJAM session or starting Icecast listening, before audio begins playing
 
 ### 2. Polish (Medium Priority)
+- Per-user pan slider (stereo position control, similar to gain slider — linear -1.0 L to +1.0 R, default center)
 - Configurable OGG encoder quality (currently hardcoded at 0.1 ≈ 75 kbps; range -0.1 to 1.0, see quality-to-bitrate mapping in `OggVorbisEncoder.qualityForBitrate`)
 - Settings persistence (audio quality, latency compensation)
 - Error handling improvements (reconnect logic, timeout UX)
 
-### 3. Discovery &amp; Listener Mode (Done)
-- **Public server browser:** ✅ Done. GET `https://ninbot.com/app/servers.php` → JSON. Auto-refresh 60s + manual refresh button. Cache-busted (`.reloadIgnoringLocalCacheData` + timestamp param). Sorted by user count. Server selection pre-fills connection dialog.
-- **Listener mode:** ✅ Done. Manual decode pipeline via `IcecastStreamPlayer`: `URLSession` → `AudioFileStream` → `AudioConverter` → `CircularBuffer` → render thread `mixInto()`. Handles MP3 streams. Level meter bar in server browser row (~15 Hz, exponential 0.85× decay, green/red). Stream lifecycle tied to browser open/close. `Icy-MetaData: 0` header suppresses metadata interleaving.
-- **World map:** `users[]` entries include `lat`/`lon` — can render connected users on a `MapKit` map, same as JamTaba.
+### 3. iOS/iPadOS Polish
+- Set `preferredContentSize = CGSize(width: 320, height: 480)` in `AudioUnitViewController.viewDidLoad` — iOS hosts (GarageBand, AUM) may give zero-size frame without it
+- Gain slider layout too rigid for iPhone — `VerticalGainSlider` hardcoded `frame(width: 30, height: 160)`, needs `GeometryReader` or horizontal `ScrollView`
+- Deprecated `onChange` single-closure form in `jamauv3ExtensionMainView.swift` — update to two-parameter `.onChange(of:) { _, _ in }`
+- Missing keyboard modifiers on connection fields — `.keyboardType(.URL)`, `.numberPad`, `.textInputAutocapitalization(.never)`
+- Remove deprecated `inter-app-audio` entitlement from `jamauv3.entitlements`
+- `UserDefaults.standard` not shared across AU hosts — consider App Group for cross-host persistence
 
-### 4. iOS/iPadOS (Mostly Done)
+### 4. Future Ideas
+- World map: server `users[]` entries include `lat`/`lon` — render on `MapKit` map (like JamTaba)
 
-The project builds and runs on real iPad (tested: iPad Pro 11-inch 4th gen, 48000 Hz). NINJAM connection, Icecast listening, and server browser all work. Deferred engine start saves battery when idle.
-
-#### CRITICAL — ALL FIXED
-
-All critical iOS blockers resolved: build errors (`CoreAudio` import, `NSColor`/`NSApplication`), runtime crash (audio session ordering), MIDI hang (`MIDIClientCreateWithBlock` XPC), mic feedback (zero output instead of passthrough), battery drain (deferred engine start via `needsAudio` parameter).
-
-**Extension network/mic entitlements** — resolved (in-process AU inherits host permissions on iOS).
-
-**`AVAudioSession` in extension** — not needed for test host (host sets `.playAndRecord`). Third-party DAW hosts may need the extension to set its own session category.
-
-#### IMPORTANT — needed for usable UI on iPhone
-
-**e) `preferredContentSize` not set** (`AudioUnitViewController.swift:viewDidLoad`)
-Without this, iOS hosts (GarageBand, AUM) may give the plugin a zero-size frame. Add:
-```swift
-preferredContentSize = CGSize(width: 320, height: 480)
-```
-
-**f) Gain slider layout too rigid for iPhone** (`ParameterSlider.swift`)
-`VerticalGainSlider` has hardcoded `frame(width: 30, height: 160)`. 8 sliders × 30pt = 240pt minimum — barely fits 320pt iPhone screen with no padding. Replace hardcoded height with a `GeometryReader`-proportional value, or wrap the slider row in a `ScrollView(.horizontal)`.
-
-#### MODERATE — polish
-
-**g) Deprecated `onChange` form** (`jamauv3ExtensionMainView.swift:168`)
-`.onChange(of: ninjamClient.chatMessages.count) { _ in` — single-closure form deprecated in iOS 17+. Update to two-parameter form: `.onChange(of: ninjamClient.chatMessages.count) { _, _ in }`.
-
-**h) Missing keyboard modifiers on connection fields** (`jamauv3ExtensionMainView.swift` connection sheet)
-Add to server field: `.keyboardType(.URL).autocorrectionDisabled()`. Port field: `.keyboardType(.numberPad)`. Username: `.textInputAutocapitalization(.never).autocorrectionDisabled()`.
-
-#### LOW — cleanup
-
-**i) Deprecated `inter-app-audio` entitlement** (`jamauv3.entitlements`)
-Remove `<key>inter-app-audio</key>` — deprecated since iOS 13, may cause App Store review friction.
-
-**j) `UserDefaults.standard` not shared across AU hosts** (`ConnectionSettings.swift:13`)
-Connection settings (server, port, user) saved to `UserDefaults.standard` are not visible when the plugin is loaded in a different host app (GarageBand vs AUM etc). If cross-host persistence is desired: add an App Group entitlement to both host and extension, configure a suite name, and use `UserDefaults(suiteName: "group.com.jamauv3")`.
-
-### 5. App Store preparation
+### 5. App Store Preparation
 
 ## Key Facts
 - **NINJAM port:** 2049
