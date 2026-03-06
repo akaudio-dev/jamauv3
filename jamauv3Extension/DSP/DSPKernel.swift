@@ -85,6 +85,7 @@ final class DSPKernel: @unchecked Sendable {
 
     // Metronome render state (render thread only)
     private var metronomeSamplePos: Int = 0
+    private var lastMetronomeBeatIndex: Int = -1
     private var clickSamplesRemaining: Int = 0
     private var clickPhase: Double = 0.0
     private var clickOmega: Double = 0.0
@@ -254,35 +255,71 @@ final class DSPKernel: @unchecked Sendable {
     /// Snap metronome position to align with beat grid (called from snapToBeatGridIfNeeded).
     private func snapMetronomePosition(_ newPosition: Int) {
         metronomeSamplePos = newPosition
+        lastMetronomeBeatIndex = -1
         clickSamplesRemaining = 0
     }
 
     /// Mix metronome clicks into the output buffer. RT-safe: no allocations, no locks.
+    /// When host tempo is available, derives beat timing from host beat position
+    /// to stay locked to the DAW grid. Falls back to sample counting otherwise.
     private func mixMetronome(outputBufferList: UnsafeMutablePointer<AudioBufferList>,
                               frameCount: Int,
-                              intervalLength: Int) {
+                              intervalLength: Int,
+                              hostTempo: Double,
+                              hostBeat: Double) {
         guard metronomeEnabled.load(ordering: .relaxed) != 0 else { return }
-        guard intervalLength > 0, ninjamBPI > 0, sampleRate > 0 else { return }
+        guard ninjamBPI > 0, sampleRate > 0 else { return }
 
         let beat1Only = metronomeBeat1Only.load(ordering: .relaxed) != 0
-        let samplesPerBeat = intervalLength / ninjamBPI
-        guard samplesPerBeat > 0 else { return }
-
         let clickDuration = Int(sampleRate) / 100  // ~10ms, matches njclient.cpp
         let gain: Float = 0.5
+        let bpi = ninjamBPI
 
         let buffers = UnsafeMutableAudioBufferListPointer(outputBufferList)
         guard buffers.count >= 1,
               let outL = buffers[0].mData?.assumingMemoryBound(to: Float.self) else { return }
         let outR = buffers.count >= 2 ? buffers[1].mData?.assumingMemoryBound(to: Float.self) : nil
 
-        for i in 0..<frameCount {
-            let pos = metronomeSamplePos
-            let beatIndex = pos / samplesPerBeat
-            let posInBeat = pos % samplesPerBeat
+        // Host-synced mode: derive beat timing from host beat position
+        let useHostSync = hostTempo > 0
+        let beatsPerSample = useHostSync ? (hostTempo / 60.0) / sampleRate : 0.0
+        let bpiDouble = Double(bpi)
 
-            // Detect beat start
-            if posInBeat == 0 {
+        // Fallback mode needs samplesPerBeat
+        let samplesPerBeat = intervalLength > 0 ? intervalLength / bpi : 0
+
+        for i in 0..<frameCount {
+            var beatIndex: Int
+            var triggerClick = false
+
+            if useHostSync {
+                // Compute beat position at this sample from host
+                let currentBeat = hostBeat + Double(i) * beatsPerSample
+                let beatInBPI = currentBeat.truncatingRemainder(dividingBy: bpiDouble)
+                let positiveBeat = beatInBPI >= 0 ? beatInBPI : beatInBPI + bpiDouble
+                beatIndex = Int(floor(positiveBeat)) % bpi
+
+                // Detect beat boundary crossing
+                if beatIndex != lastMetronomeBeatIndex {
+                    lastMetronomeBeatIndex = beatIndex
+                    triggerClick = true
+                }
+            } else {
+                // Fallback: sample counting (no host tempo available)
+                guard intervalLength > 0, samplesPerBeat > 0 else {
+                    metronomeSamplePos = (metronomeSamplePos + 1) % max(intervalLength, 1)
+                    continue
+                }
+                let pos = metronomeSamplePos
+                beatIndex = pos / samplesPerBeat
+                let posInBeat = pos % samplesPerBeat
+                if posInBeat == 0 {
+                    triggerClick = true
+                }
+                metronomeSamplePos = (pos + 1) % intervalLength
+            }
+
+            if triggerClick {
                 let isBeat1 = (beatIndex == 0)
                 let shouldClick = isBeat1 || !beat1Only
 
@@ -308,8 +345,6 @@ final class DSPKernel: @unchecked Sendable {
                 clickPhase += clickOmega
                 clickSamplesRemaining -= 1
             }
-
-            metronomeSamplePos = (pos + 1) % intervalLength
         }
     }
 
@@ -388,6 +423,7 @@ final class DSPKernel: @unchecked Sendable {
         // At interval boundary, compute drift correction for the NEXT interval
         if boundaryHit {
             metronomeSamplePos = 0
+            lastMetronomeBeatIndex = -1
             if tempo > 0 {
                 computeDriftCorrection(hostBPM: tempo, hostBeat: beatPosition)
             }
@@ -401,10 +437,12 @@ final class DSPKernel: @unchecked Sendable {
             memset(outputData, 0, Int(frameCount) * MemoryLayout<Float>.size)
         }
 
-        // Mix metronome click track
+        // Mix metronome click track (host-synced when tempo available)
         mixMetronome(outputBufferList: outputBufferList,
                      frameCount: Int(frameCount),
-                     intervalLength: currentIntervalLength)
+                     intervalLength: currentIntervalLength,
+                     hostTempo: tempo,
+                     hostBeat: beatPosition)
 
         // Mix remote users' audio into the output
         // Reset per-user peak scratch buffer, collect peaks during mix, then publish to atomics
