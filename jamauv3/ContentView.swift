@@ -12,33 +12,49 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             #if os(iOS) || os(visionOS)
-            InputSourceBar(
-                inputSource: hostModel.inputSource,
-                onSelect: { source in
-                    hostModel.switchInputSource(to: source)
-                }
-            )
-            Divider()
+            let instrumentMaximized = hostModel.inputSource.isInstrumentMaximized
+                && hostModel.inputSource.isShowingInstrumentUI
+            if !instrumentMaximized {
+                InputSourceBar(
+                    inputSource: hostModel.inputSource,
+                    onSelect: { source in
+                        hostModel.switchInputSource(to: source)
+                    }
+                )
+                Divider()
+            }
             #endif
 
-            if let viewController = hostModel.viewModel.viewController {
-                AUViewControllerUI(viewController: viewController)
-            } else if hostModel.viewModel.isLoaded {
-                Text(hostModel.viewModel.message)
-                    .foregroundColor(.red)
-            } else {
-                ProgressView("Loading\u{2026}")
+            #if os(iOS) || os(visionOS)
+            let hideMainView = instrumentMaximized
+            #else
+            let hideMainView = false
+            #endif
+
+            if !hideMainView {
+                if let viewController = hostModel.viewModel.viewController {
+                    AUViewControllerUI(viewController: viewController)
+                } else if hostModel.viewModel.isLoaded {
+                    Text(hostModel.viewModel.message)
+                        .foregroundColor(.red)
+                } else {
+                    ProgressView("Loading\u{2026}")
+                }
             }
 
             #if os(iOS) || os(visionOS)
             if hostModel.inputSource.isShowingInstrumentUI,
                let instVC = hostModel.inputSource.instrumentViewController {
-                Divider()
+                if !instrumentMaximized { Divider() }
                 InstrumentViewPanel(
                     viewController: instVC,
                     isShowing: Binding(
                         get: { hostModel.inputSource.isShowingInstrumentUI },
                         set: { hostModel.inputSource.isShowingInstrumentUI = $0 }
+                    ),
+                    isMaximized: Binding(
+                        get: { hostModel.inputSource.isInstrumentMaximized },
+                        set: { hostModel.inputSource.isInstrumentMaximized = $0 }
                     )
                 )
             }
@@ -54,6 +70,7 @@ struct ContentView: View {
 struct InstrumentViewPanel: View {
     let viewController: UIViewController
     @Binding var isShowing: Bool
+    @Binding var isMaximized: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -61,7 +78,17 @@ struct InstrumentViewPanel: View {
                 Text("Instrument")
                     .font(.callout.bold())
                 Spacer()
-                Button(action: { isShowing = false }) {
+                Button(action: { withAnimation { isMaximized.toggle() } }) {
+                    Image(systemName: isMaximized
+                          ? "arrow.down.right.and.arrow.up.left"
+                          : "arrow.up.left.and.arrow.down.right")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.borderless)
+                Button(action: {
+                    isMaximized = false
+                    isShowing = false
+                }) {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundColor(.secondary)
                 }
@@ -72,7 +99,7 @@ struct InstrumentViewPanel: View {
             .background(Color.primary.opacity(0.04))
 
             AUViewControllerUI(viewController: viewController)
-                .frame(height: 300)
+                .frame(maxHeight: isMaximized ? .infinity : 300)
         }
     }
 }

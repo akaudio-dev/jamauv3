@@ -42,6 +42,7 @@ class InputSourceModel {
     var instrumentViewController: ViewController?
     var instrumentAU: AVAudioUnit?
     var isShowingInstrumentUI: Bool = false
+    var isInstrumentMaximized: Bool = false
 
     // MARK: - Refresh
 

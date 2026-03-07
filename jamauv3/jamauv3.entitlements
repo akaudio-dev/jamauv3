@@ -4,7 +4,5 @@
 <dict>
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
-	<key>inter-app-audio</key>
-	<true/>
 </dict>
 </plist>

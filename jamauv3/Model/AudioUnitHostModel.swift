@@ -68,6 +68,7 @@ class AudioUnitHostModel {
             } else {
                 inputSource.instrumentViewController = nil
                 inputSource.isShowingInstrumentUI = false
+                inputSource.isInstrumentMaximized = false
             }
         }
     }

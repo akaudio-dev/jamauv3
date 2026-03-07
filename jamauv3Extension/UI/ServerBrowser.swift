@@ -234,6 +234,9 @@ struct ServerBrowserView: View {
                     .foregroundColor(.secondary)
                 TextField("Username", text: $connectionSettings.username)
                     .textFieldStyle(.roundedBorder)
+                    #if os(iOS) || os(visionOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
                     .frame(maxWidth: 200)
             }
             .padding(.horizontal)

@@ -36,7 +36,7 @@ struct jamauv3ExtensionMainView: View {
 
                 // Inline overlays (sheets don't work in out-of-process AUv3)
                 if activeSheet == .connection {
-                    connectionOverlay
+                    connectionOverlay(availableWidth: geo.size.width)
                 } else if activeSheet == .serverBrowser {
                     ServerBrowserView(
                         connectionSettings: connectionSettings,
@@ -221,7 +221,7 @@ struct jamauv3ExtensionMainView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 4)
                 }
-                .onChange(of: ninjamClient.chatMessages.count) {
+                .onChange(of: ninjamClient.chatMessages.count) { _, _ in
                     if let last = ninjamClient.chatMessages.last {
                         withAnimation(.easeOut(duration: 0.15)) {
                             proxy.scrollTo(last.id, anchor: .bottom)
@@ -254,7 +254,7 @@ struct jamauv3ExtensionMainView: View {
 
     // MARK: - Connection Overlay
 
-    private var connectionOverlay: some View {
+    private func connectionOverlay(availableWidth: CGFloat) -> some View {
         VStack {
             Spacer()
             VStack(spacing: 16) {
@@ -266,13 +266,23 @@ struct jamauv3ExtensionMainView: View {
                     HStack(spacing: 8) {
                         TextField("Server", text: $connectionSettings.serverName)
                             .textFieldStyle(.roundedBorder)
+                            #if os(iOS) || os(visionOS)
+                            .keyboardType(.URL)
+                            .textInputAutocapitalization(.never)
+                            #endif
                         TextField("Port", text: $connectionSettings.port)
                             .textFieldStyle(.roundedBorder)
-                            .frame(width: 80)
+                            #if os(iOS) || os(visionOS)
+                            .keyboardType(.numberPad)
+                            #endif
+                            .frame(maxWidth: 80)
                     }
 
                     TextField("Username", text: $connectionSettings.username)
                         .textFieldStyle(.roundedBorder)
+                        #if os(iOS) || os(visionOS)
+                        .textInputAutocapitalization(.never)
+                        #endif
 
                     SecureField("Password", text: $connectionSettings.password)
                         .textFieldStyle(.roundedBorder)
@@ -303,7 +313,7 @@ struct jamauv3ExtensionMainView: View {
                 .padding(.bottom)
             }
             .padding(.horizontal)
-            .frame(maxWidth: 360)
+            .frame(maxWidth: min(360, availableWidth - 32))
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

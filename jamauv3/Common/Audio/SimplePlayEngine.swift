@@ -61,6 +61,8 @@ public class SimplePlayEngine {
     // MIDI: receive from CoreMIDI, forward to the AU's scheduleMIDIEventListBlock.
     // Protected by Mutex — written on @MainActor, read from CoreMIDI thread.
     private let _scheduleMIDIEventListBlock = Mutex<AUMIDIEventListBlock?>(nil)
+    // Fallback for instruments that only support MIDI 1.0 scheduleMIDIEventBlock.
+    private let _scheduleMIDIEventBlock = Mutex<AUScheduleMIDIEventBlock?>(nil)
     private let midiOutBlock: AUMIDIOutputEventBlock = { _, _, _, _ in return noErr }
 
     #if os(iOS) || os(visionOS)
@@ -105,11 +107,46 @@ public class SimplePlayEngine {
     #endif
 
     private func setupMIDI() {
-        _ = MIDIManager.shared.setupPort(midiProtocol: MIDIProtocolID._2_0, receiveBlock: { [weak self] eventList, _ in
+        let ok = MIDIManager.shared.setupPort(midiProtocol: MIDIProtocolID._2_0, receiveBlock: { [weak self] eventList, _ in
             guard let self else { return }
             let block = self._scheduleMIDIEventListBlock.withLock { $0 }
-            _ = block?(AUEventSampleTimeImmediate, 0, eventList)
+            if block != nil {
+                _ = block?(AUEventSampleTimeImmediate, 0, eventList)
+            } else {
+                // Fallback: convert MIDI 2.0 event list to MIDI 1.0 calls
+                let midi1Block = self._scheduleMIDIEventBlock.withLock { $0 }
+                if let midi1Block {
+                    let list = eventList.pointee
+                    withUnsafePointer(to: list) { listPtr in
+                        var packetPtr: UnsafePointer<MIDIEventPacket>? = nil
+                        for i in 0..<list.numPackets {
+                            if i == 0 {
+                                packetPtr = UnsafePointer(
+                                    UnsafeRawPointer(listPtr)
+                                        .advanced(by: MemoryLayout<MIDIEventList>.offset(of: \.packet)!)
+                                        .assumingMemoryBound(to: MIDIEventPacket.self))
+                            } else if let current = packetPtr {
+                                packetPtr = UnsafePointer(MIDIEventPacketNext(current))
+                            }
+                            guard let pkt = packetPtr else { break }
+                            let wordCount = Int(pkt.pointee.wordCount)
+                            guard wordCount > 0 else { continue }
+                            let first = pkt.pointee.words.0
+                            // Extract MIDI 1.0 from Universal MIDI Packet
+                            let status = UInt8((first >> 16) & 0xFF)
+                            let data1 = UInt8((first >> 8) & 0xFF)
+                            let data2 = UInt8(first & 0xFF)
+                            midi1Block(AUEventSampleTimeImmediate, 0, 3, [status, data1, data2])
+                        }
+                    }
+                }
+            }
         })
+        if ok {
+            log.notice("CoreMIDI setup succeeded")
+        } else {
+            log.error("CoreMIDI setup failed")
+        }
     }
 
     // MARK: - Load
@@ -389,14 +426,20 @@ public class SimplePlayEngine {
         }
     }
 
-    /// Wire: instrument AU → jamauv3 AU → mainMixer
+    /// Wire: instrument AU → jamauv3 AU (for NINJAM capture) + instrument AU → mainMixer (for local monitoring).
+    /// jamauv3 zeroes its output (no passthrough) so the instrument must also be routed directly to the mixer.
     private func connectInstrumentToAU(_ instAU: AVAudioUnit, jamauv3 audioUnit: AVAudioUnit) {
         let hwFormat = engine.outputNode.outputFormat(forBus: 0)
         let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: hwFormat.sampleRate, channels: 2)!
 
         engine.attach(instAU)
-        engine.connect(instAU, to: audioUnit, format: stereoFormat)
-        engine.connect(audioUnit, to: engine.mainMixerNode, format: stereoFormat)
+        // Fan out instrument: bus 0 → jamauv3 (capture), bus 1 → mainMixer (monitoring)
+        engine.connect(instAU, to: [
+            AVAudioConnectionPoint(node: audioUnit, bus: 0),
+            AVAudioConnectionPoint(node: engine.mainMixerNode, bus: 1)
+        ], fromBus: 0, format: stereoFormat)
+        // jamauv3 output (remote audio + metronome) → mainMixer bus 0
+        engine.connect(audioUnit, to: engine.mainMixerNode, fromBus: 0, toBus: 0, format: stereoFormat)
     }
 
     private func setPreferredInput(_ port: AVAudioSessionPortDescription?) {
@@ -412,10 +455,21 @@ public class SimplePlayEngine {
     private func setMIDITargetJamauv3() {
         guard let au = avAudioUnit else { return }
         _scheduleMIDIEventListBlock.withLock { $0 = au.auAudioUnit.scheduleMIDIEventListBlock }
+        _scheduleMIDIEventBlock.withLock { $0 = au.auAudioUnit.scheduleMIDIEventBlock }
     }
 
     private func setMIDITargetInstrument(_ instAU: AVAudioUnit) {
-        _scheduleMIDIEventListBlock.withLock { $0 = instAU.auAudioUnit.scheduleMIDIEventListBlock }
+        let listBlock = instAU.auAudioUnit.scheduleMIDIEventListBlock
+        let eventBlock = instAU.auAudioUnit.scheduleMIDIEventBlock
+        _scheduleMIDIEventListBlock.withLock { $0 = listBlock }
+        _scheduleMIDIEventBlock.withLock { $0 = eventBlock }
+        if listBlock != nil {
+            log.notice("MIDI target: instrument (MIDI 2.0 event list)")
+        } else if eventBlock != nil {
+            log.notice("MIDI target: instrument (MIDI 1.0 fallback)")
+        } else {
+            log.warning("MIDI target: instrument has no MIDI schedule block")
+        }
     }
 
 #endif
