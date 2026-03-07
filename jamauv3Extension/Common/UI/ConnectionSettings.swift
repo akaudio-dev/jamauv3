@@ -19,8 +19,6 @@ class ConnectionSettings: ObservableObject {
         static let username = "jamauv3.connection.username"
         static let password = "jamauv3.connection.password"
         static let stereo = "jamauv3.connection.stereo"
-        static let metronomeEnabled = "jamauv3.connection.metronomeEnabled"
-        static let metronomeBeat1Only = "jamauv3.connection.metronomeBeat1Only"
     }
     
     @Published var serverName: String {
@@ -53,17 +51,8 @@ class ConnectionSettings: ObservableObject {
         }
     }
 
-    @Published var metronomeEnabled: Bool {
-        didSet {
-            defaults.set(metronomeEnabled, forKey: Keys.metronomeEnabled)
-        }
-    }
-
-    @Published var metronomeBeat1Only: Bool {
-        didSet {
-            defaults.set(metronomeBeat1Only, forKey: Keys.metronomeBeat1Only)
-        }
-    }
+    @Published var metronomeEnabled: Bool = false
+    @Published var metronomeBeat1Only: Bool = false
 
     init() {
         // Load saved values or use defaults
@@ -72,8 +61,6 @@ class ConnectionSettings: ObservableObject {
         self.username = defaults.string(forKey: Keys.username) ?? ""
         self.password = defaults.string(forKey: Keys.password) ?? ""
         self.stereo = defaults.bool(forKey: Keys.stereo)
-        self.metronomeEnabled = defaults.bool(forKey: Keys.metronomeEnabled)
-        self.metronomeBeat1Only = defaults.bool(forKey: Keys.metronomeBeat1Only)
     }
     
     /// Save all settings explicitly (called when Connect is pressed)
@@ -83,8 +70,6 @@ class ConnectionSettings: ObservableObject {
         defaults.set(username, forKey: Keys.username)
         defaults.set(password, forKey: Keys.password)
         defaults.set(stereo, forKey: Keys.stereo)
-        defaults.set(metronomeEnabled, forKey: Keys.metronomeEnabled)
-        defaults.set(metronomeBeat1Only, forKey: Keys.metronomeBeat1Only)
         defaults.synchronize()
     }
 
@@ -95,8 +80,6 @@ class ConnectionSettings: ObservableObject {
         defaults.removeObject(forKey: Keys.username)
         defaults.removeObject(forKey: Keys.password)
         defaults.removeObject(forKey: Keys.stereo)
-        defaults.removeObject(forKey: Keys.metronomeEnabled)
-        defaults.removeObject(forKey: Keys.metronomeBeat1Only)
         defaults.synchronize()
 
         serverName = ""

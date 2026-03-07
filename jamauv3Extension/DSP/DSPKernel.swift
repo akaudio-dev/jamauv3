@@ -268,7 +268,7 @@ final class DSPKernel: @unchecked Sendable {
                               hostTempo: Double,
                               hostBeat: Double) {
         guard metronomeEnabled.load(ordering: .relaxed) != 0 else { return }
-        guard ninjamBPI > 0, sampleRate > 0 else { return }
+        guard intervalBuffer != nil, ninjamBPI > 0, sampleRate > 0 else { return }
 
         let beat1Only = metronomeBeat1Only.load(ordering: .relaxed) != 0
         let clickDuration = Int(sampleRate) / 100  // ~10ms, matches njclient.cpp
