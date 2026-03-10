@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build and install jamauv3.app into /Applications so the AUv3 extension
+# Build and install Jam AUv3.app into /Applications so the AUv3 extension
 # is always available system-wide (in DAWs, etc).
 # Also kills stale extension processes and re-registers with pluginkit.
 set -euo pipefail
@@ -12,14 +12,14 @@ if [ -z "$BUILD_DIR" ]; then
     exit 1
 fi
 
-APP="$BUILD_DIR/Build/Products/Debug/jamauv3.app"
+APP="$BUILD_DIR/Build/Products/Debug/Jam AUv3.app"
 APPEX="$APP/Contents/PlugIns/jamauv3Extension.appex"
 INSTALL_DIR="/Applications"
-INSTALLED_APP="$INSTALL_DIR/jamauv3.app"
+INSTALLED_APP="$INSTALL_DIR/Jam AUv3.app"
 
 echo "==> Killing old processes..."
 pkill -9 -f jamauv3Extension 2>/dev/null || true
-pkill -9 -f "jamauv3.app" 2>/dev/null || true
+pkill -9 -f "Jam AUv3.app" 2>/dev/null || true
 sleep 0.5
 
 echo "==> Cleaning..."
@@ -43,4 +43,4 @@ pluginkit -a "$INSTALLED_APP/Contents/PlugIns/jamauv3Extension.appex" 2>/dev/nul
 echo "==> Verifying..."
 pluginkit -m 2>&1 | grep -i jamau || echo "WARNING: Extension not found in pluginkit"
 
-echo "Done. jamauv3.app installed to $INSTALL_DIR."
+echo "Done. Jam AUv3.app installed to $INSTALL_DIR."

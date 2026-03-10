@@ -20,20 +20,24 @@ struct AUViewControllerUI: UIViewControllerRepresentable {
         guard let auViewController = self.auViewController else {
             return UIViewController()
         }
-        
+
         let viewController = UIViewController()
         viewController.addChild(auViewController)
 
-        let frame: CGRect = viewController.view.bounds
-        auViewController.view.frame = frame
-        
+        auViewController.view.translatesAutoresizingMaskIntoConstraints = false
         viewController.view.addSubview(auViewController.view)
+        NSLayoutConstraint.activate([
+            auViewController.view.topAnchor.constraint(equalTo: viewController.view.topAnchor),
+            auViewController.view.bottomAnchor.constraint(equalTo: viewController.view.bottomAnchor),
+            auViewController.view.leadingAnchor.constraint(equalTo: viewController.view.leadingAnchor),
+            auViewController.view.trailingAnchor.constraint(equalTo: viewController.view.trailingAnchor),
+        ])
+
         auViewController.didMove(toParent: viewController)
         return viewController
     }
-    
+
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
-        // No op
     }
 }
 #elseif os(macOS)

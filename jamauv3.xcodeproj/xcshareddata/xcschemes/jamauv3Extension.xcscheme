@@ -31,7 +31,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "1CDA06C22F1AF65E00D4544F"
-               BuildableName = "jamauv3.app"
+               BuildableName = "Jam AUv3.app"
                BlueprintName = "jamauv3"
                ReferencedContainer = "container:jamauv3.xcodeproj">
             </BuildableReference>

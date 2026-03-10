@@ -18,14 +18,11 @@ struct jamauv3ExtensionMainView: View {
     var icecastPeakReader: (() -> Float)?
 
     enum ActiveSheet: Identifiable {
-        case connection, serverBrowser
+        case connection, serverBrowser, about
         var id: Self { self }
     }
 
-    enum Tab { case chat, users }
-
     @State private var activeSheet: ActiveSheet?
-    @State private var selectedTab: Tab = .chat
     @State private var chatInput = ""
 
     var body: some View {
@@ -37,6 +34,8 @@ struct jamauv3ExtensionMainView: View {
                 // Inline overlays (sheets don't work in out-of-process AUv3)
                 if activeSheet == .connection {
                     connectionOverlay(availableWidth: geo.size.width)
+                } else if activeSheet == .about {
+                    AboutView(onDismiss: { activeSheet = nil })
                 } else if activeSheet == .serverBrowser {
                     ServerBrowserView(
                         connectionSettings: connectionSettings,
@@ -74,9 +73,10 @@ struct jamauv3ExtensionMainView: View {
 
     private var mainContent: some View {
         VStack(spacing: 0) {
-            // Top bar: (BPM/BPI)(progress)(beat/bpi) ... (connection)(button)
-            HStack(spacing: 6) {
-                if ninjamClient.isConnected && ninjamClient.bpm > 0 {
+            // Top bar
+            if ninjamClient.isConnected && ninjamClient.bpm > 0 {
+                // Connected: transport row + server row
+                HStack(spacing: 6) {
                     Text("\(ninjamClient.bpm)/\(ninjamClient.bpi)")
                         .font(.callout.monospacedDigit().bold())
                         .foregroundColor(ninjamClient.isBPMMismatch ? .orange : .primary)
@@ -108,29 +108,48 @@ struct jamauv3ExtensionMainView: View {
                             Label("Beat 1 Only", systemImage: connectionSettings.metronomeBeat1Only ? "checkmark" : "")
                         }
                     }
-                }
 
-                Spacer(minLength: 8)
+                    Spacer(minLength: 4)
 
-                Circle()
-                    .fill(ninjamClient.isConnected ? Color.green : Color.gray)
-                    .frame(width: 8, height: 8)
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 8, height: 8)
 
-                if ninjamClient.isConnected {
-                    Text("\(connectionSettings.serverName):\(connectionSettings.port)")
-                        .font(.callout)
+                    Text(connectionSettings.serverName)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                         .lineLimit(1)
+
                     Button(action: { ninjamClient.disconnect() }) {
                         Image(systemName: "network.slash")
                             .font(.callout)
                             .foregroundColor(.red)
                     }
                     .buttonStyle(.borderless)
-                } else {
+
+                    Button(action: { activeSheet = .about }) {
+                        Image(systemName: "info.circle")
+                            .font(.callout)
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+            } else {
+                // Disconnected: single row
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color.gray)
+                        .frame(width: 8, height: 8)
+
                     Text(ninjamClient.connectionStatus)
                         .font(.callout)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
+
+                    Spacer(minLength: 8)
+
                     Button(action: { activeSheet = .serverBrowser }) {
                         Image(systemName: "globe")
                             .font(.callout)
@@ -141,10 +160,16 @@ struct jamauv3ExtensionMainView: View {
                             .font(.callout)
                     }
                     .buttonStyle(.borderless)
+                    Button(action: { activeSheet = .about }) {
+                        Image(systemName: "info.circle")
+                            .font(.callout)
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.borderless)
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
 
             // BPM mismatch warning
             if ninjamClient.isBPMMismatch && ninjamClient.hostBPM > 0 {
@@ -160,11 +185,8 @@ struct jamauv3ExtensionMainView: View {
 
             Divider()
 
-            // Tab content
-            switch selectedTab {
-            case .chat:
-                chatTerminal
-            case .users:
+            // User gain faders strip (compact, only when connected)
+            if ninjamClient.isConnected {
                 HStack(spacing: 0) {
                     let usersGroup: ObservableAUParameterGroup = parameterTree.users
                     ForEach(0..<usersGroup.parameters.count, id: \.self) { index in
@@ -175,19 +197,16 @@ struct jamauv3ExtensionMainView: View {
                         )
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity)
+                .frame(height: 180)
+                .padding(.vertical, 4)
                 .padding(.horizontal, 4)
+
+                Divider()
             }
 
-            // Tab picker (below chat/users content)
-            Picker("", selection: $selectedTab) {
-                Text("Chat").tag(Tab.chat)
-                Text("Users").tag(Tab.users)
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
+            // Chat terminal
+            chatTerminal
         }
     }
 
@@ -196,8 +215,8 @@ struct jamauv3ExtensionMainView: View {
     private var chatTerminal: some View {
         VStack(spacing: 0) {
             // Server topic bar
-            if ninjamClient.isConnected && !ninjamClient.serverTopic.isEmpty {
-                Text(ninjamClient.serverTopic)
+            if ninjamClient.isConnected && !ninjamClient.serverTopic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(ninjamClient.serverTopic.trimmingCharacters(in: .whitespacesAndNewlines))
                     .font(.footnote)
                     .foregroundColor(.secondary)
                     .lineLimit(1)

@@ -11,19 +11,19 @@ if [ -z "$BUILD_DIR" ]; then
     exit 1
 fi
 
-APP="$BUILD_DIR/Build/Products/Debug/jamauv3.app"
+APP="$BUILD_DIR/Build/Products/Debug/Jam AUv3.app"
 APPEX="$APP/Contents/PlugIns/jamauv3Extension.appex"
 
 echo "==> Killing old processes..."
 pkill -9 -f jamauv3Extension 2>/dev/null || true
-pkill -9 -f jamauv3.app 2>/dev/null || true
+pkill -9 -f "Jam AUv3.app" 2>/dev/null || true
 sleep 0.5
 
 # Remove /Applications copy if it exists (conflicts with DerivedData registration)
-if [ -d "/Applications/jamauv3.app" ]; then
-    echo "==> Removing /Applications/jamauv3.app (avoids pluginkit conflict)..."
-    pluginkit -r "/Applications/jamauv3.app/Contents/PlugIns/jamauv3Extension.appex" 2>/dev/null || true
-    rm -rf "/Applications/jamauv3.app"
+if [ -d "/Applications/Jam AUv3.app" ]; then
+    echo "==> Removing /Applications/Jam AUv3.app (avoids pluginkit conflict)..."
+    pluginkit -r "/Applications/Jam AUv3.app/Contents/PlugIns/jamauv3Extension.appex" 2>/dev/null || true
+    rm -rf "/Applications/Jam AUv3.app"
 fi
 
 echo "==> Cleaning..."

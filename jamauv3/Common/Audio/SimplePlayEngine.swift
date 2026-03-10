@@ -155,6 +155,7 @@ public class SimplePlayEngine {
         reset() 
 
         guard let component = AVAudioUnit.findComponent(type: type, subType: subType, manufacturer: manufacturer) else {
+            log.error("AU component not found: type=\(type, privacy: .public) subType=\(subType, privacy: .public) mfr=\(manufacturer, privacy: .public)")
             return nil
         }
 
@@ -162,6 +163,8 @@ public class SimplePlayEngine {
             // Load in-process for the test host app — avoids XPC rate-limit noise
             // and the NSRemoteView overhead of out-of-process hosting.
             // Real DAW hosts will load out-of-process with their own sandboxing.
+            // Note: .loadInProcess is unavailable on iOS; [] lets the system decide
+            // (typically in-process for the host's own embedded extension).
             #if os(macOS)
             let options: AudioComponentInstantiationOptions = .loadInProcess
             #else
@@ -172,6 +175,7 @@ public class SimplePlayEngine {
             self.avAudioUnit = audioUnit
             return await audioUnit.loadAudioUnitViewController()
         } catch {
+            log.error("Failed to instantiate AU component: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }
@@ -265,20 +269,32 @@ public class SimplePlayEngine {
     private func connect(_ audioUnit: AVAudioUnit) {
         engine.attach(audioUnit)
 
+        let hwFormat = engine.outputNode.outputFormat(forBus: 0)
+        let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: hwFormat.sampleRate, channels: 2)!
+
         if audioUnit.wantsAudioInput && Self.hasAudioInput() {
             let inputFormat = engine.inputNode.outputFormat(forBus: 0)
             guard inputFormat.sampleRate > 0 && inputFormat.channelCount > 0 else {
                 log.warning("Input format invalid (\(inputFormat.sampleRate) Hz, \(inputFormat.channelCount) ch) — skipping input")
-                let hwFormat = engine.outputNode.outputFormat(forBus: 0)
-                let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: hwFormat.sampleRate, channels: 2)
+                engine.connect(audioUnit, to: engine.mainMixerNode, format: stereoFormat)
+                return
+            }
+            // Pre-validate: set the AU's bus formats before connecting.
+            // AVAudioEngine.connect() throws ObjC exceptions on format mismatch;
+            // AUAudioUnitBus.setFormat() throws a Swift error we can handle.
+            let au = audioUnit.auAudioUnit
+            do {
+                try au.inputBusses[0].setFormat(inputFormat)
+                try au.outputBusses[0].setFormat(inputFormat)
+            } catch {
+                log.warning("AU rejected input format (\(inputFormat.sampleRate) Hz, \(inputFormat.channelCount) ch): \(error.localizedDescription) — falling back to stereo hw format")
+                // Fall back: connect without mic input, using the hardware output sample rate
                 engine.connect(audioUnit, to: engine.mainMixerNode, format: stereoFormat)
                 return
             }
             engine.connect(engine.inputNode, to: audioUnit, format: inputFormat)
             engine.connect(audioUnit, to: engine.mainMixerNode, format: inputFormat)
         } else {
-            let hwFormat = engine.outputNode.outputFormat(forBus: 0)
-            let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: hwFormat.sampleRate, channels: 2)
             engine.connect(audioUnit, to: engine.mainMixerNode, format: stereoFormat)
         }
 
@@ -322,7 +338,8 @@ public class SimplePlayEngine {
         avAudioUnit = nil
     }
 
-    private func setSessionActive(_ active: Bool, needsMic: Bool = true) {
+    @discardableResult
+    private func setSessionActive(_ active: Bool, needsMic: Bool = true) -> Bool {
 #if os(iOS) || os(visionOS)
         do {
             let session = AVAudioSession.sharedInstance()
@@ -333,9 +350,13 @@ public class SimplePlayEngine {
                 try session.setCategory(.playback, mode: .default)
             }
             try session.setActive(active)
+            return true
         } catch {
             log.error("Could not set Audio Session active \(active): \(error.localizedDescription)")
+            return false
         }
+#else
+        return true
 #endif
     }
 
@@ -380,7 +401,13 @@ public class SimplePlayEngine {
             setMIDITargetJamauv3()
 
         case .instrument(let desc):
-            setSessionActive(true, needsMic: false)
+            guard setSessionActive(true, needsMic: false) else {
+                log.error("Session activation failed for instrument — falling back to mic")
+                setSessionActive(true, needsMic: true)
+                connectMicToAU(audioUnit)
+                setMIDITargetJamauv3()
+                break
+            }
             do {
                 let instAU = try await AVAudioUnit.instantiate(with: desc, options: [])
                 self.instrumentAU = instAU
@@ -408,20 +435,28 @@ public class SimplePlayEngine {
 
     /// Wire: inputNode (mic) → jamauv3 AU → mainMixer
     private func connectMicToAU(_ audioUnit: AVAudioUnit) {
+        let hwFormat = engine.outputNode.outputFormat(forBus: 0)
+        let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: hwFormat.sampleRate, channels: 2)!
+
         if Self.hasAudioInput() {
             let inputFormat = engine.inputNode.outputFormat(forBus: 0)
             guard inputFormat.sampleRate > 0 && inputFormat.channelCount > 0 else {
                 log.warning("Input format invalid — skipping mic input")
-                let hwFormat = engine.outputNode.outputFormat(forBus: 0)
-                let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: hwFormat.sampleRate, channels: 2)
+                engine.connect(audioUnit, to: engine.mainMixerNode, format: stereoFormat)
+                return
+            }
+            let au = audioUnit.auAudioUnit
+            do {
+                try au.inputBusses[0].setFormat(inputFormat)
+                try au.outputBusses[0].setFormat(inputFormat)
+            } catch {
+                log.warning("AU rejected input format: \(error.localizedDescription) — falling back to stereo hw format")
                 engine.connect(audioUnit, to: engine.mainMixerNode, format: stereoFormat)
                 return
             }
             engine.connect(engine.inputNode, to: audioUnit, format: inputFormat)
             engine.connect(audioUnit, to: engine.mainMixerNode, format: inputFormat)
         } else {
-            let hwFormat = engine.outputNode.outputFormat(forBus: 0)
-            let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: hwFormat.sampleRate, channels: 2)
             engine.connect(audioUnit, to: engine.mainMixerNode, format: stereoFormat)
         }
     }
@@ -430,9 +465,23 @@ public class SimplePlayEngine {
     /// jamauv3 zeroes its output (no passthrough) so the instrument must also be routed directly to the mixer.
     private func connectInstrumentToAU(_ instAU: AVAudioUnit, jamauv3 audioUnit: AVAudioUnit) {
         let hwFormat = engine.outputNode.outputFormat(forBus: 0)
+        guard hwFormat.sampleRate > 0 && hwFormat.channelCount > 0 else {
+            log.warning("Output format invalid (\(hwFormat.sampleRate) Hz, \(hwFormat.channelCount) ch) — cannot connect instrument")
+            return
+        }
         let stereoFormat = AVAudioFormat(standardFormatWithSampleRate: hwFormat.sampleRate, channels: 2)!
 
         engine.attach(instAU)
+
+        // Pre-validate: set bus formats before connecting to avoid ObjC exceptions
+        let au = audioUnit.auAudioUnit
+        do {
+            try au.inputBusses[0].setFormat(stereoFormat)
+            try au.outputBusses[0].setFormat(stereoFormat)
+        } catch {
+            log.warning("AU rejected instrument format: \(error.localizedDescription)")
+        }
+
         // Fan out instrument: bus 0 → jamauv3 (capture), bus 1 → mainMixer (monitoring)
         engine.connect(instAU, to: [
             AVAudioConnectionPoint(node: audioUnit, bus: 0),

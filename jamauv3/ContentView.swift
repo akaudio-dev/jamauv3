@@ -37,8 +37,10 @@ struct ContentView: View {
                 } else if hostModel.viewModel.isLoaded {
                     Text(hostModel.viewModel.message)
                         .foregroundColor(.red)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ProgressView("Loading\u{2026}")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
 
