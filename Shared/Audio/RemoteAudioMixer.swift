@@ -134,6 +134,13 @@ final class RemoteAudioMixer: @unchecked Sendable {
     /// Sample position within current interval (render thread only)
     private let samplePosition = Atomic<Int>(0)
 
+    /// True once the interval clock has been anchored to a real boundary — either by a
+    /// DAW-transport snap (snapSamplePosition) or by the cold-start anchor in mixInto().
+    /// Until then the very first decoded interval is played immediately and the clock is
+    /// reset to that instant, so a freshly decoded interval doesn't wait up to a full
+    /// interval for the free-running boundary (the startup-latency bug).
+    private let clockAnchored = Atomic<Bool>(false)
+
     /// Snapshot of channels for render thread — updated at boundaries.
     /// Pre-allocated with capacity to avoid heap allocation on render thread.
     private var renderChannels: [ChannelPlaybackState] = {
@@ -165,6 +172,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
         _intervalLength.store(config.intervalLengthInSamples, ordering: .releasing)
         _sampleRate.store(Int(config.sampleRate), ordering: .releasing)
         samplePosition.store(0, ordering: .releasing)
+        clockAnchored.store(false, ordering: .releasing)
         stagedRenderChannels.withLock { $0 = nil }
 
         let thread = Thread { [weak self] in
@@ -278,50 +286,47 @@ final class RemoteAudioMixer: @unchecked Sendable {
         }
     }
 
-    /// Called when user info changes. Assigns gain slots to usernames.
+    /// Called when user info changes (USERINFO_CHANGE_NOTIFY). Assigns gain slots to usernames.
+    ///
+    /// This message is INCREMENTAL: it lists only the channels that changed, and signals a
+    /// departure with an explicit `isActive == false` record. Users absent from the message are
+    /// unaffected, so we apply each record independently and must NOT treat the message as a full
+    /// roster snapshot. (Treating it as a snapshot silenced every existing player whenever a new
+    /// one joined: their channels weren't in the join message, so they looked "departed" and got
+    /// their slot + playback state torn down.)
     func updateUserInfo(channels: [RemoteChannelInfo]) {
-        var activeUsernames = Set<String>()
-        for ch in channels where ch.isActive {
-            activeUsernames.insert(ch.username)
-        }
+        var snapshotDirty = false
 
-        // Remove slots for users who left
-        for (username, slot) in userSlots {
-            if !activeUsernames.contains(username) {
-                slotInUse[slot] = false
-                userSlots.removeValue(forKey: username)
-                for (_, state) in channelStates where state.channelKey.username == username {
-                    state.gainSlot.store(-1, ordering: .releasing)
-                }
-                // logger.debug("updateUserInfo: freed slot \(slot) for \(username)")
-            }
-        }
+        for ch in channels {
+            let key = ChannelKey(username: ch.username, channelIndex: Int(ch.channelIndex))
 
-        // Assign slots to new users
-        for username in activeUsernames {
-            if userSlots[username] == nil {
-                if let freeSlot = slotInUse.firstIndex(of: false) {
+            if ch.isActive {
+                // Ensure this user has a gain slot, then propagate it to any of their channels.
+                if userSlots[ch.username] == nil, let freeSlot = slotInUse.firstIndex(of: false) {
                     slotInUse[freeSlot] = true
-                    userSlots[username] = freeSlot
-                    for (_, state) in channelStates where state.channelKey.username == username {
-                        state.gainSlot.store(freeSlot, ordering: .releasing)
+                    userSlots[ch.username] = freeSlot
+                    // logger.debug("updateUserInfo: assigned slot \(freeSlot) to \(ch.username)")
+                }
+                if let slot = userSlots[ch.username] {
+                    for (_, state) in channelStates where state.channelKey.username == ch.username {
+                        state.gainSlot.store(slot, ordering: .releasing)
                     }
-                    // logger.debug("updateUserInfo: assigned slot \(freeSlot) to \(username)")
-                } else {
-                    // logger.warning("updateUserInfo: no free slots for \(username)")
+                }
+            } else {
+                // Explicit departure of this one channel: drop its playback state…
+                if channelStates.removeValue(forKey: key) != nil {
+                    snapshotDirty = true
+                }
+                // …and free the user's gain slot only once they have no channels left.
+                let userStillPresent = channelStates.keys.contains { $0.username == ch.username }
+                if !userStillPresent, let slot = userSlots.removeValue(forKey: ch.username) {
+                    slotInUse[slot] = false
+                    // logger.debug("updateUserInfo: freed slot \(slot) for \(ch.username)")
                 }
             }
         }
 
-        // Clean up playback states for inactive channels
-        let inactiveKeys = channelStates.keys.filter { key in
-            !channels.contains(where: { $0.username == key.username && Int($0.channelIndex) == key.channelIndex && $0.isActive })
-        }
-        for key in inactiveKeys {
-            channelStates.removeValue(forKey: key)
-        }
-
-        if !inactiveKeys.isEmpty {
+        if snapshotDirty {
             stageRenderSnapshot()
         }
     }
@@ -414,6 +419,8 @@ final class RemoteAudioMixer: @unchecked Sendable {
     /// Called from DSPKernel.process() on transport start/seek. RT-safe (single atomic store).
     func snapSamplePosition(_ newPosition: Int) {
         samplePosition.store(newPosition, ordering: .releasing)
+        // A DAW-transport snap defines the clock phase; suppress the cold-start anchor.
+        clockAnchored.store(true, ordering: .releasing)
     }
 
     /// Mix remote audio into the output buffer. Called from DSPKernel.process().
@@ -446,6 +453,32 @@ final class RemoteAudioMixer: @unchecked Sendable {
 
         // Track sample position and detect boundary
         var pos = samplePosition.load(ordering: .acquiring)
+
+        // Cold-start anchor: if the clock isn't anchored yet (we're free-running, i.e. no
+        // DAW-transport snap is driving it) and the first decoded interval is ready, start
+        // playing it now and reset the clock to this instant. This aligns the interval
+        // boundary to the real server interval grid, so a freshly decoded interval plays as
+        // soon as it arrives instead of waiting up to a full interval for the free-running
+        // boundary. When DAW-synced, snapSamplePosition() has already set clockAnchored, so
+        // we defer to that alignment instead.
+        if !clockAnchored.load(ordering: .acquiring) {
+            var anyReady = false
+            for channel in renderChannels {
+                if channel.nextReady.load(ordering: .acquiring) { anyReady = true; break }
+            }
+            if anyReady {
+                for channel in renderChannels {
+                    if channel.nextReady.exchange(false, ordering: .acquiringAndReleasing) {
+                        channel.currentBuffer = channel.nextBuffer
+                        channel.nextBuffer = nil
+                        bufferSwapCount.wrappingAdd(1, ordering: .relaxed)
+                    }
+                }
+                pos = 0
+                clockAnchored.store(true, ordering: .releasing)
+            }
+        }
+
         let willCrossBoundary = pos + frameCount >= intervalLength
 
         // At interval boundary, swap buffers
