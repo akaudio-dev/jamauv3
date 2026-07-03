@@ -18,46 +18,85 @@ final class DSPKernel: @unchecked Sendable {
     // MARK: - Properties
 
     private(set) var sampleRate: Double = 44100.0
-    private var userGains: [Float] = Array(repeating: 1.0, count: Int(jamauv3ExtensionNumUsers))
+
+    static let numUsers = Int(jamauv3ExtensionNumUsers)
+
+    /// Per-user gains as Float bit patterns. Written from the main thread
+    /// (implementorValueObserver → setParameter) and from parameter events on
+    /// the render thread; read every render callback.
+    private let userGainBits: UnsafeMutablePointer<Atomic<UInt32>> = {
+        let ptr = UnsafeMutablePointer<Atomic<UInt32>>.allocate(capacity: numUsers)
+        for i in 0..<numUsers {
+            (ptr + i).initialize(to: Atomic(Float(1.0).bitPattern))
+        }
+        return ptr
+    }()
+    /// Render-thread-local gains copy filled from userGainBits each callback.
+    private let userGainScratch: UnsafeMutablePointer<Float> = {
+        let ptr = UnsafeMutablePointer<Float>.allocate(capacity: numUsers)
+        ptr.initialize(repeating: 1.0, count: numUsers)
+        return ptr
+    }()
 
     private var noteEnvelope: Float = 1.0  // Initialize to 1.0 so audio passes through even without MIDI
     private var bypassed: Bool = false
     private var maxFramesToRender: AUAudioFrameCount = 1024
 
+    /// NINJAM capture, remote mix, and Icecast playback components. Published
+    /// from the main thread, snapshotted once per render callback. Mutex
+    /// (os_unfair_lock, nanosecond hold) rather than plain vars: a non-atomic
+    /// strong-reference load on the render thread racing the main thread's
+    /// release is a data race with a use-after-free window.
+    private struct Components {
+        var intervalBuffer: IntervalBuffer?
+        var remoteAudioMixer: RemoteAudioMixer?
+        var icecastPlayer: IcecastStreamPlayer?
+    }
+    private let components = Mutex<Components>(Components())
+
     /// Interval buffer for capturing local audio and encoding to OGG for NINJAM upload
-    var intervalBuffer: IntervalBuffer?
+    var intervalBuffer: IntervalBuffer? {
+        get { components.withLock { $0.intervalBuffer } }
+        set { components.withLock { $0.intervalBuffer = newValue } }
+    }
+
+    /// Remote audio mixer for decoding and playing back other users' audio
+    var remoteAudioMixer: RemoteAudioMixer? {
+        get { components.withLock { $0.remoteAudioMixer } }
+        set { components.withLock { $0.remoteAudioMixer = newValue } }
+    }
+
+    /// Icecast stream player for listen-only mode (server browser)
+    var icecastPlayer: IcecastStreamPlayer? {
+        get { components.withLock { $0.icecastPlayer } }
+        set { components.withLock { $0.icecastPlayer = newValue } }
+    }
 
     /// Peak amplitude trackers (render thread writes, diagnostic timer reads)
     let inputPeak = Atomic<UInt32>(0)   // Float bits stored as UInt32 for atomic access
     let outputPeak = Atomic<UInt32>(0)
 
-    /// Per-user output peaks: render thread writes each callback, main thread reads at ~15 Hz.
-    /// Stored as Float bit patterns in UInt32 atomics for lock-free render→main thread transfer.
-    private let userPeakStorage: UnsafeMutablePointer<UInt32> = {
-        let ptr = UnsafeMutablePointer<UInt32>.allocate(capacity: 8)
-        ptr.initialize(repeating: 0, count: 8)
+    /// Per-user output peaks: render thread max-accumulates each callback,
+    /// main thread exchanges at ~5 Hz. Float bit patterns in UInt32 atomics.
+    private let userPeakStorage: UnsafeMutablePointer<Atomic<UInt32>> = {
+        let ptr = UnsafeMutablePointer<Atomic<UInt32>>.allocate(capacity: numUsers)
+        for i in 0..<numUsers {
+            (ptr + i).initialize(to: Atomic(0))
+        }
         return ptr
     }()
     /// Scratch buffer for collecting peaks within a single render callback (render thread only).
     private let userPeakScratch: UnsafeMutablePointer<Float> = {
-        let ptr = UnsafeMutablePointer<Float>.allocate(capacity: 8)
-        ptr.initialize(repeating: 0, count: 8)
+        let ptr = UnsafeMutablePointer<Float>.allocate(capacity: numUsers)
+        ptr.initialize(repeating: 0, count: numUsers)
         return ptr
     }()
 
-    /// Read and reset peak for a user slot (called from main thread ~15 Hz).
+    /// Read and reset peak for a user slot (called from main thread ~5 Hz).
     func exchangeUserPeak(slot: Int) -> Float {
-        guard slot >= 0, slot < 8 else { return 0 }
-        let bits = userPeakStorage[slot]
-        userPeakStorage[slot] = 0
-        return Float(bitPattern: bits)
+        guard slot >= 0, slot < Self.numUsers else { return 0 }
+        return Float(bitPattern: userPeakStorage[slot].exchange(0, ordering: .relaxed))
     }
-
-    /// Remote audio mixer for decoding and playing back other users' audio
-    var remoteAudioMixer: RemoteAudioMixer?
-
-    /// Icecast stream player for listen-only mode (server browser)
-    var icecastPlayer: IcecastStreamPlayer?
 
     var musicalContextBlock: AUHostMusicalContextBlock?
     var transportStateBlock: AUHostTransportStateBlock?
@@ -126,26 +165,27 @@ final class DSPKernel: @unchecked Sendable {
     
     // MARK: - Parameters
     
-    private var needsAudioValue: AUValue = 0.0
+    /// Float bit pattern; set from main or render, read from main.
+    private let needsAudioBits = Atomic<UInt32>(0)
 
     func setParameter(address: AUParameterAddress, value: AUValue) {
         if address == jamauv3ExtensionParameterAddress_needsAudio {
-            needsAudioValue = value
+            needsAudioBits.store(value.bitPattern, ordering: .relaxed)
             return
         }
         let index = Int(address - jamauv3ExtensionParameterAddress_userGainBase)
-        if index >= 0 && index < Int(jamauv3ExtensionNumUsers) {
-            userGains[index] = value
+        if index >= 0 && index < Self.numUsers {
+            userGainBits[index].store(value.bitPattern, ordering: .relaxed)
         }
     }
 
     func getParameter(address: AUParameterAddress) -> AUValue {
         if address == jamauv3ExtensionParameterAddress_needsAudio {
-            return needsAudioValue
+            return AUValue(Float(bitPattern: needsAudioBits.load(ordering: .relaxed)))
         }
         let index = Int(address - jamauv3ExtensionParameterAddress_userGainBase)
-        if index >= 0 && index < Int(jamauv3ExtensionNumUsers) {
-            return AUValue(userGains[index])
+        if index >= 0 && index < Self.numUsers {
+            return AUValue(Float(bitPattern: userGainBits[index].load(ordering: .relaxed)))
         }
         return 0.0
     }
@@ -188,7 +228,8 @@ final class DSPKernel: @unchecked Sendable {
 
     /// Detect transport start, seek, or initial connect and snap interval position to DAW beat grid.
     /// Called from process() — RT-safe (atomics only, no allocations).
-    private func snapToBeatGridIfNeeded(tempo: Double, beatPosition: Double, frameCount: Int) {
+    private func snapToBeatGridIfNeeded(tempo: Double, beatPosition: Double, frameCount: Int,
+                                        capture: IntervalBuffer?, mixer: RemoteAudioMixer?) {
         // Determine transport state
         var transportMoving = false
         if let tsBlock = transportStateBlock {
@@ -235,8 +276,8 @@ final class DSPKernel: @unchecked Sendable {
         let targetPosition = Int(positiveBeat * samplesPerBeat)
         let clampedTarget = max(0, min(targetPosition, baseLength - 1))
 
-        intervalBuffer?.snapSamplePosition(clampedTarget)
-        remoteAudioMixer?.snapSamplePosition(clampedTarget)
+        capture?.snapSamplePosition(clampedTarget)
+        mixer?.snapSamplePosition(clampedTarget)
         snapMetronomePosition(clampedTarget)
 
         // Also reset drift correction to base after a snap
@@ -290,10 +331,11 @@ final class DSPKernel: @unchecked Sendable {
                               frameCount: Int,
                               intervalLength: Int,
                               hostTempo: Double,
-                              hostBeat: Double) {
+                              hostBeat: Double,
+                              captureActive: Bool) {
         guard metronomeEnabled.load(ordering: .relaxed) != 0 else { return }
         let bpi = ninjamBPI.load(ordering: .relaxed)
-        guard intervalBuffer != nil, bpi > 0, sampleRate > 0 else { return }
+        guard captureActive, bpi > 0, sampleRate > 0 else { return }
 
         let beat1Only = metronomeBeat1Only.load(ordering: .relaxed) != 0
         let clickDuration = Int(sampleRate) / 100  // ~10ms, matches njclient.cpp
@@ -384,6 +426,11 @@ final class DSPKernel: @unchecked Sendable {
                  outputBufferList: UnsafeMutablePointer<AudioBufferList>,
                  frameCount: AUAudioFrameCount,
                  bufferStartTime: AUEventSampleTime) {
+        // Snapshot the audio components once per callback (brief os_unfair_lock)
+        let (capture, mixer, icecast) = components.withLock {
+            ($0.intervalBuffer, $0.remoteAudioMixer, $0.icecastPlayer)
+        }
+
         // Read host musical context (RT-safe: stack vars + atomic stores)
         var tempo: Double = 0
         var beatPosition: Double = 0
@@ -394,7 +441,8 @@ final class DSPKernel: @unchecked Sendable {
         }
 
         // Detect transport start/seek and snap interval position to DAW beat grid
-        snapToBeatGridIfNeeded(tempo: tempo, beatPosition: beatPosition, frameCount: Int(frameCount))
+        snapToBeatGridIfNeeded(tempo: tempo, beatPosition: beatPosition, frameCount: Int(frameCount),
+                               capture: capture, mixer: mixer)
 
         let currentIntervalLength = correctedIntervalLength.load(ordering: .acquiring)
 
@@ -418,7 +466,7 @@ final class DSPKernel: @unchecked Sendable {
 
         // Capture raw input for NINJAM upload (before envelope processing)
         var boundaryHit = false
-        if let intervalBuffer = intervalBuffer,
+        if let intervalBuffer = capture,
            inputBuffers.count >= 1,
            let inputDataL = inputBuffers[0].mData {
             let inputL = inputDataL.assumingMemoryBound(to: Float.self)
@@ -474,31 +522,35 @@ final class DSPKernel: @unchecked Sendable {
                      frameCount: Int(frameCount),
                      intervalLength: currentIntervalLength,
                      hostTempo: tempo,
-                     hostBeat: beatPosition)
+                     hostBeat: beatPosition,
+                     captureActive: capture != nil)
 
         // Mix remote users' audio into the output
         // Reset per-user peak scratch buffer, collect peaks during mix, then publish to atomics
         let scratch = userPeakScratch
-        for i in 0..<8 { scratch[i] = 0 }
-        userGains.withUnsafeBufferPointer { gainsPtr in
-            remoteAudioMixer?.mixInto(
-                outputBufferList: outputBufferList,
-                frameCount: Int(frameCount),
-                userGains: gainsPtr,
-                outPeaks: scratch,
-                intervalLength: currentIntervalLength)
+        let gains = userGainScratch
+        for i in 0..<Self.numUsers {
+            scratch[i] = 0
+            gains[i] = Float(bitPattern: userGainBits[i].load(ordering: .relaxed))
         }
-        // Publish peaks from this render callback (max-accumulate into atomic storage)
-        let storage = userPeakStorage
-        for i in 0..<8 {
+        mixer?.mixInto(
+            outputBufferList: outputBufferList,
+            frameCount: Int(frameCount),
+            userGains: UnsafeBufferPointer(start: gains, count: Self.numUsers),
+            outPeaks: scratch,
+            intervalLength: currentIntervalLength)
+        // Publish peaks from this render callback (max-accumulate into atomic storage;
+        // the load/compare/store pair may lose an update racing exchangeUserPeak — a
+        // one-tick meter blip, not a correctness issue)
+        for i in 0..<Self.numUsers {
             let peakBits = scratch[i].bitPattern
-            if peakBits > storage[i] {
-                storage[i] = peakBits
+            if peakBits > userPeakStorage[i].load(ordering: .relaxed) {
+                userPeakStorage[i].store(peakBits, ordering: .relaxed)
             }
         }
 
         // Mix Icecast listener audio (server browser listen mode)
-        icecastPlayer?.mixInto(outputBufferList: outputBufferList, frameCount: Int(frameCount))
+        icecast?.mixInto(outputBufferList: outputBufferList, frameCount: Int(frameCount))
     }
     
     // MARK: - Event Handling

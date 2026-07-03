@@ -79,18 +79,32 @@ final class PlaybackBuffer: @unchecked Sendable {
 final class ChannelPlaybackState: @unchecked Sendable {
     let channelKey: ChannelKey
 
-    /// Read by render thread during mix
+    /// Read/written by render thread only during mix
     var currentBuffer: PlaybackBuffer?
-    /// Written by decode thread after decoding
-    var nextBuffer: PlaybackBuffer?
-    /// Decode thread sets true; render thread exchanges to false at interval boundary
-    let nextReady = Atomic<Bool>(false)
+    /// Decode→render handoff slot. Mutex (os_unfair_lock, nanosecond hold)
+    /// rather than a ready-flag + plain reference: the flag pair raced when a
+    /// burst decode replaced the reference while the render thread was
+    /// mid-swap. nil = nothing pending.
+    let nextBuffer = Mutex<PlaybackBuffer?>(nil)
     /// Index into DSPKernel.userGains[] (-1 = not assigned).
     /// Atomic: written by main thread (updateUserInfo), read by render thread (mixInto).
     let gainSlot = Atomic<Int>(-1)
 
     init(channelKey: ChannelKey) {
         self.channelKey = channelKey
+    }
+
+    /// Take the pending buffer if one is ready (render thread).
+    func takeNextBuffer() -> PlaybackBuffer? {
+        nextBuffer.withLock { pending in
+            let taken = pending
+            pending = nil
+            return taken
+        }
+    }
+
+    var hasNextBuffer: Bool {
+        nextBuffer.withLock { $0 != nil }
     }
 }
 
@@ -402,8 +416,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
                 buffer = PlaybackBuffer(samples: samples, channels: 1)
             }
 
-            job.playbackState.nextBuffer = buffer
-            job.playbackState.nextReady.store(true, ordering: .releasing)
+            job.playbackState.nextBuffer.withLock { $0 = buffer }
 
             decodeCount.wrappingAdd(1, ordering: .relaxed)
 
@@ -486,13 +499,12 @@ final class RemoteAudioMixer: @unchecked Sendable {
         if !clockAnchored.load(ordering: .acquiring) {
             var anyReady = false
             for channel in renderChannels {
-                if channel.nextReady.load(ordering: .acquiring) { anyReady = true; break }
+                if channel.hasNextBuffer { anyReady = true; break }
             }
             if anyReady {
                 for channel in renderChannels {
-                    if channel.nextReady.exchange(false, ordering: .acquiringAndReleasing) {
-                        channel.currentBuffer = channel.nextBuffer
-                        channel.nextBuffer = nil
+                    if let next = channel.takeNextBuffer() {
+                        channel.currentBuffer = next
                         bufferSwapCount.wrappingAdd(1, ordering: .relaxed)
                     }
                 }
@@ -506,9 +518,8 @@ final class RemoteAudioMixer: @unchecked Sendable {
         // At interval boundary, swap buffers
         if willCrossBoundary {
             for channel in renderChannels {
-                if channel.nextReady.exchange(false, ordering: .acquiringAndReleasing) {
-                    channel.currentBuffer = channel.nextBuffer
-                    channel.nextBuffer = nil
+                if let next = channel.takeNextBuffer() {
+                    channel.currentBuffer = next
                     bufferSwapCount.wrappingAdd(1, ordering: .relaxed)
                 }
             }

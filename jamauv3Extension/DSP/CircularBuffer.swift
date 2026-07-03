@@ -62,7 +62,13 @@ final class CircularBuffer: @unchecked Sendable {
         writeIndex.load(ordering: .acquiring) == readIndex.load(ordering: .acquiring)
     }
 
-    /// Clears all data from the buffer
+    /// Clears all data from the buffer.
+    ///
+    /// Only safe while no concurrent reader or writer is active (e.g. before
+    /// the buffer is published to the render thread): storing both indices
+    /// from a third thread races a concurrent read() and can leave
+    /// readIndex logically ahead of writeIndex — availableToRead then wraps
+    /// and up to a full ring of stale samples replays.
     func reset() {
         writeIndex.store(0, ordering: .releasing)
         readIndex.store(0, ordering: .releasing)

@@ -121,10 +121,13 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
 
     func start(url: URL) {
         guard !isRunning.load(ordering: .acquiring) else { return }
-        isRunning.store(true, ordering: .releasing)
+
+        // Reset everything before publishing isRunning: mixInto gates on it, so
+        // the ring must be cleared before the render thread can pass the gate —
+        // a reset racing a concurrent read can replay stale samples.
+        ringBuffer.reset()
         streamEnded.store(false, ordering: .releasing)
         prebuffering.store(true, ordering: .releasing)
-        ringBuffer.reset()
         formatDiscovered = false
 
         totalBytesReceived = 0
@@ -147,9 +150,10 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
         streamLock.unlock()
         guard status == noErr else {
             log.error("AudioFileStreamOpen failed: \(status)")
-            isRunning.store(false, ordering: .releasing)
             return
         }
+
+        isRunning.store(true, ordering: .releasing)
 
         var request = URLRequest(url: url)
         request.setValue("0", forHTTPHeaderField: "Icy-MetaData")

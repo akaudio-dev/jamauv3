@@ -138,12 +138,25 @@ final class ServerBrowserViewModel {
                 components.queryItems = [URLQueryItem(name: "t", value: "\(Int(Date().timeIntervalSince1970))")]
                 var request = URLRequest(url: components.url!)
                 request.cachePolicy = .reloadIgnoringLocalCacheData
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
                 guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                     let code = (response as? HTTPURLResponse)?.statusCode ?? -1
                     log.error("Server list fetch failed: HTTP \(code)")
                     errorMessage = "Server returned an error"
                     return
+                }
+                // Bound the body (normal responses are ~50 KB) — an unbounded
+                // download would OOM the memory-limited AUv3 extension.
+                let maxBytes = 4 * 1024 * 1024
+                var data = Data()
+                data.reserveCapacity(128 * 1024)
+                for try await byte in bytes {
+                    data.append(byte)
+                    if data.count > maxBytes {
+                        log.error("Server list response exceeded \(maxBytes) bytes")
+                        errorMessage = "Server returned an oversized response"
+                        return
+                    }
                 }
                 servers = try JSONDecoder().decode(NINJAMServerListResponse.self, from: data).servers
                 log.notice("Loaded \(self.servers.count) servers")
