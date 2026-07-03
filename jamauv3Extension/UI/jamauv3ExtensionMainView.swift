@@ -16,6 +16,7 @@ struct jamauv3ExtensionMainView: View {
     var onListenStart: ((URL) -> Void)?
     var onListenStop: (() -> Void)?
     var icecastPeakReader: (() -> Float)?
+    var icecastIsAlive: (() -> Bool)?
 
     @State private var chatInput = ""
     @State private var showAbout = false
@@ -31,7 +32,8 @@ struct jamauv3ExtensionMainView: View {
                     ninjamClient: ninjamClient,
                     onListenStart: onListenStart,
                     onListenStop: onListenStop,
-                    icecastPeakReader: icecastPeakReader
+                    icecastPeakReader: icecastPeakReader,
+                    icecastIsAlive: icecastIsAlive
                 )
             }
         }

@@ -15,6 +15,7 @@ struct ConnectionScreen: View {
     var onListenStart: ((URL) -> Void)?
     var onListenStop: (() -> Void)?
     var icecastPeakReader: (() -> Float)?
+    var icecastIsAlive: (() -> Bool)?
 
     @State private var browserViewModel = ServerBrowserViewModel()
     @State private var showAbout = false
@@ -55,6 +56,7 @@ struct ConnectionScreen: View {
             browserViewModel.onListenStart = onListenStart
             browserViewModel.onListenStop = onListenStop
             browserViewModel.icecastPeakReader = icecastPeakReader
+            browserViewModel.icecastIsAlive = icecastIsAlive
             browserViewModel.startAutoRefresh()
         }
         .onDisappear {

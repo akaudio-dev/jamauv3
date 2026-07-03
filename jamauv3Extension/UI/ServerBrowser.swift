@@ -88,6 +88,10 @@ final class ServerBrowserViewModel {
     var onListenStart: ((URL) -> Void)?
     var onListenStop: (() -> Void)?
     var icecastPeakReader: (() -> Float)?
+    /// Polled while listening: false once the stream has ended on its own
+    /// (server close, network error, idle timeout) so the UI can tear down
+    /// instead of sitting silent on a stuck "listening" row.
+    var icecastIsAlive: (() -> Bool)?
 
     var icecastPeakLevel: Float = 0
     private var refreshTask: Task<Void, Never>?
@@ -182,7 +186,13 @@ final class ServerBrowserViewModel {
         peakTimer = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(67))  // ~15 Hz
-                guard let self, let reader = self.icecastPeakReader else { continue }
+                guard let self else { continue }
+                if let isAlive = self.icecastIsAlive, !isAlive() {
+                    self.stopListening()
+                    self.errorMessage = "Stream ended"
+                    break
+                }
+                guard let reader = self.icecastPeakReader else { continue }
                 let newPeak = reader()
                 let current = self.icecastPeakLevel
                 let updated = newPeak > current ? newPeak : current * 0.85
@@ -205,6 +215,7 @@ struct ServerBrowserView: View {
     var onListenStart: ((URL) -> Void)?
     var onListenStop: (() -> Void)?
     var icecastPeakReader: (() -> Float)?
+    var icecastIsAlive: (() -> Bool)?
 
     @State private var viewModel = ServerBrowserViewModel()
 
@@ -297,6 +308,7 @@ struct ServerBrowserView: View {
             viewModel.onListenStart = onListenStart
             viewModel.onListenStop = onListenStop
             viewModel.icecastPeakReader = icecastPeakReader
+            viewModel.icecastIsAlive = icecastIsAlive
             viewModel.startAutoRefresh()
         }
         .onDisappear { viewModel.stopAutoRefresh() }

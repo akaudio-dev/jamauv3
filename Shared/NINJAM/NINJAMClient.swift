@@ -111,6 +111,11 @@ final class NINJAMClient: ObservableObject {
     private var username: String = ""
     private var password: String = ""
 
+    /// Last server notice (empty-sender chat MSG) that looks like a kick.
+    /// A kick has no protocol message — the server broadcasts the notice, then
+    /// closes the socket — so this becomes the disconnect reason.
+    private var lastServerNotice: String?
+
     // Connection
     private var connection: NWConnection?
     private let connectionQueue = DispatchQueue(label: "com.jamauv3.ninjam.connection")
@@ -172,7 +177,10 @@ final class NINJAMClient: ObservableObject {
 
     /// Connect to a NINJAM server
     func connect(host: String, port: UInt16 = NJ_PORT, username: String, password: String) {
-        guard state == .disconnected else {
+        switch state {
+        case .disconnected, .error:
+            break
+        default:
             logger.warning("Already connecting or connected")
             return
         }
@@ -180,6 +188,12 @@ final class NINJAMClient: ObservableObject {
         self.username = username
         self.password = password
         self.serverInfo = ServerInfo(host: host, port: port)
+        // Fresh keepalive clocks: stale times from a previous session would trip
+        // the 3× receive timeout on the first tick and kill the handshake.
+        lastSendTime = Date()
+        lastReceiveTime = Date()
+        lastServerNotice = nil
+        lastError = nil
         logger.info("Connecting to \(host, privacy: .public):\(port, privacy: .public) as \(username, privacy: .public)")
         setState(.connecting)
 
@@ -196,24 +210,36 @@ final class NINJAMClient: ObservableObject {
         tcpOptions.noDelay = true
         parameters.defaultProtocolStack.transportProtocol = tcpOptions
 
-        connection = NWConnection(to: endpoint, using: parameters)
+        let conn = NWConnection(to: endpoint, using: parameters)
+        connection = conn
 
-        connection?.stateUpdateHandler = { [weak self] newState in
+        // Capture the connection and compare identity in every callback: after a
+        // rapid disconnect/connect, a stale event from the previous connection
+        // (.cancelled, .failed, a receive error) must not stomp the new session.
+        conn.stateUpdateHandler = { [weak self] newState in
             Task { @MainActor [weak self] in
-                self?.handleConnectionStateChange(newState)
+                guard let self, self.connection === conn else { return }
+                self.handleConnectionStateChange(newState)
             }
         }
 
-        connection?.start(queue: connectionQueue)
+        conn.start(queue: connectionQueue)
 
         // Start keepalive timer
         startKeepaliveTimer()
     }
 
-    /// Disconnect from the server
+    /// Disconnect from the server (user-initiated)
     func disconnect() {
         logger.debug("Disconnecting (state: \(String(describing: self.state)))")
-        // Stop timers
+        teardown()
+        setState(.disconnected)
+    }
+
+    /// Stop timers and drop the connection without changing state.
+    /// Callers set the final state: .disconnected for a user Leave,
+    /// .error(reason) for a failure or a server-initiated close.
+    private func teardown() {
         keepaliveTimer?.invalidate()
         keepaliveTimer = nil
         stopIntervalTimer()
@@ -223,7 +249,6 @@ final class NINJAMClient: ObservableObject {
 
         receiveBuffer.removeAll()
         serverInfo = nil
-        setState(.disconnected)
     }
 
     // MARK: - Connection State Handling
@@ -236,10 +261,12 @@ final class NINJAMClient: ObservableObject {
 
         case .failed(let error):
             logger.error("Connection failed: \(error.localizedDescription, privacy: .public)")
+            teardown()
             setState(.error("Connection failed: \(error.localizedDescription)"))
 
         case .cancelled:
             logger.debug("Connection cancelled")
+            teardown()
             setState(.disconnected)
 
         case .waiting(let error):
@@ -253,32 +280,36 @@ final class NINJAMClient: ObservableObject {
     // MARK: - Receiving
 
     private func startReceiving() {
-        connection?.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-            if let error = error {
-                Task { @MainActor [weak self] in
-                    self?.logger.error("Receive error: \(error.localizedDescription)")
-                    self?.setState(.error("Receive error: \(error.localizedDescription)"))
-                }
-                return
-            }
+        guard let conn = connection else { return }
+        conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
+            Task { @MainActor [weak self] in
+                guard let self, self.connection === conn else { return }
 
-            if let data = data, !data.isEmpty {
-                Task { @MainActor [weak self] in
-                    self?.lastReceiveTime = Date()
-                    self?.receiveBuffer.append(data)
-                    self?.processReceivedData()
+                if let error = error {
+                    self.logger.error("Receive error: \(error.localizedDescription)")
+                    self.teardown()
+                    self.setState(.error("Receive error: \(error.localizedDescription)"))
+                    return
                 }
-            }
 
-            if isComplete {
-                Task { @MainActor [weak self] in
-                    self?.logger.debug("Connection closed by server")
-                    self?.setState(.disconnected)
+                if let data = data, !data.isEmpty {
+                    self.lastReceiveTime = Date()
+                    self.receiveBuffer.append(data)
+                    self.processReceivedData()
                 }
-            } else {
-                // Continue receiving
-                Task { @MainActor [weak self] in
-                    self?.startReceiving()
+
+                if isComplete {
+                    // Server closed the socket under us (kick, shutdown, drop).
+                    // Tear down now — previously the dead connection lingered until
+                    // the keepalive timeout surfaced a misleading "Connection
+                    // timeout" ~9 s later — and prefer the server's own kick
+                    // notice as the reason.
+                    self.logger.debug("Connection closed by server")
+                    let reason = self.lastServerNotice ?? "Disconnected by server"
+                    self.teardown()
+                    self.setState(.error(reason))
+                } else {
+                    self.startReceiving()
                 }
             }
         }
@@ -302,8 +333,8 @@ final class NINJAMClient: ObservableObject {
             // receiveBuffer toward the full 4 GiB the UInt32 can claim.
             guard Int(header.payloadLength) <= NET_MESSAGE_MAX_SIZE else {
                 logger.error("Oversized message: type 0x\(String(header.type, radix: 16)) length \(header.payloadLength)")
+                teardown()
                 setState(.error("Protocol error: oversized message"))
-                disconnect()
                 return
             }
 
@@ -363,6 +394,7 @@ final class NINJAMClient: ObservableObject {
     private func handleAuthChallenge(_ payload: Data) {
         guard let challenge = ServerAuthChallenge(data: payload) else {
             logger.error("Failed to parse auth challenge")
+            teardown()
             setState(.error("Invalid auth challenge from server"))
             return
         }
@@ -370,8 +402,8 @@ final class NINJAMClient: ObservableObject {
         // Check protocol version
         guard challenge.protocolVersion >= PROTO_VER_MIN && challenge.protocolVersion < PROTO_VER_MAX else {
             logger.error("Incompatible protocol version: \(challenge.protocolVersion)")
+            teardown()
             setState(.error("Server has incompatible protocol version"))
-            disconnect()
             return
         }
 
@@ -399,6 +431,7 @@ final class NINJAMClient: ObservableObject {
     private func handleAuthReply(_ payload: Data) {
         guard let reply = ServerAuthReply(data: payload) else {
             logger.error("Failed to parse auth reply")
+            teardown()
             setState(.error("Invalid auth reply from server"))
             return
         }
@@ -417,8 +450,8 @@ final class NINJAMClient: ObservableObject {
         } else {
             let errorMsg = reply.errorMessage ?? "Authentication failed"
             logger.error("Auth failed: \(errorMsg, privacy: .public)")
+            teardown()
             setState(.error(errorMsg))
-            disconnect()
         }
     }
 
@@ -493,6 +526,13 @@ final class NINJAMClient: ObservableObject {
         guard let chat = ServerChatMessage(data: payload) else {
             logger.error("Failed to parse chat message")
             return
+        }
+
+        // A kick arrives as a server notice (empty sender) immediately before
+        // the socket closes; keep it to use as the disconnect reason.
+        if case .message(let from, let text) = chat.messageType,
+           from.isEmpty, text.localizedCaseInsensitiveContains("kick") {
+            lastServerNotice = text
         }
 
         delegate?.client(self, didReceiveChatMessage: chat)
@@ -575,8 +615,8 @@ final class NINJAMClient: ObservableObject {
         // Check for timeout (3x keepalive interval without receiving)
         if now.timeIntervalSince(lastReceiveTime) >= TimeInterval(keepaliveInterval * 3) {
             logger.error("Connection timeout - no data received")
+            teardown()
             setState(.error("Connection timeout"))
-            disconnect()
         }
     }
 

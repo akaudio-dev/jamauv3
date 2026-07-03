@@ -63,6 +63,12 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
     private let prebufferThreshold: Int  // samples needed before playback starts/resumes
     private var formatDiscovered = false
 
+    /// Set when the connection ends on its own (server close, network error,
+    /// idle timeout) — as opposed to stop(). The UI polls this to tear down
+    /// the listening state instead of showing a silent, stuck "listening" row.
+    private let streamEnded = Atomic<Bool>(false)
+    var hasEnded: Bool { streamEnded.load(ordering: .relaxed) }
+
     // Session counters for stop summary
     private var totalBytesReceived: Int = 0
     private var totalPacketsDecoded: Int = 0
@@ -116,6 +122,7 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
     func start(url: URL) {
         guard !isRunning.load(ordering: .acquiring) else { return }
         isRunning.store(true, ordering: .releasing)
+        streamEnded.store(false, ordering: .releasing)
         prebuffering.store(true, ordering: .releasing)
         ringBuffer.reset()
         formatDiscovered = false
@@ -253,8 +260,25 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
             log.error("AudioConverterNew failed: \(convStatus)")
             return
         }
+
+        // Mono source → stereo output: the converter's default routes the single
+        // input channel to output channel 0 only, leaving the right channel
+        // silent (stream plays hard-left). Map both outputs to input channel 0.
+        if inFmt.mChannelsPerFrame == 1 && outputChannels == 2 {
+            var channelMap: [Int32] = [0, 0]
+            let mapStatus = AudioConverterSetProperty(
+                conv, kAudioConverterChannelMap,
+                UInt32(MemoryLayout<Int32>.size * channelMap.count), &channelMap)
+            if mapStatus != noErr {
+                log.error("kAudioConverterChannelMap failed: \(mapStatus)")
+            }
+        }
+
+        if let old = converter {
+            AudioConverterDispose(old)
+        }
         self.converter = conv
-        log.info("AudioConverter created: \(format.mSampleRate)→\(self.outputFormat.mSampleRate) Hz")
+        log.info("AudioConverter created: \(format.mSampleRate)→\(self.outputFormat.mSampleRate) Hz, \(inFmt.mChannelsPerFrame) ch in")
     }
 
     fileprivate func handlePackets(
@@ -436,6 +460,7 @@ extension IcecastStreamPlayer: URLSessionDataDelegate {
         } else {
             log.info("Stream completed normally")
         }
+        streamEnded.store(true, ordering: .releasing)
     }
 }
 

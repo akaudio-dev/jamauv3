@@ -68,10 +68,20 @@ final class DSPKernel: @unchecked Sendable {
     /// Host beat position (Double.bitPattern)
     let hostBeatPosition = Atomic<UInt64>(0)
 
-    // Tempo sync: interval length correction
-    private var baseIntervalLength: Int = 0
-    private var ninjamBPI: Int = 0
+    // Tempo sync: interval length correction.
+    // Atomics: written from the main thread (setIntervalConfig) and the render
+    // thread (boundary apply below), read every render callback.
+    private let baseIntervalLength = Atomic<Int>(0)
+    private let ninjamBPI = Atomic<Int>(0)
     let correctedIntervalLength = Atomic<Int>(0)
+
+    // A mid-session BPM/BPI change staged until the next interval boundary.
+    // Applying instantly mid-interval fires a spurious boundary and re-anchors
+    // the interval clock to the message's arrival time instead of the server's
+    // grid (njclient applies config changes at the boundary too).
+    private let pendingBPI = Atomic<Int>(0)
+    private let pendingIntervalLength = Atomic<Int>(0)
+    private let hasPendingConfig = Atomic<Bool>(false)
 
     // Transport sync: snap interval position to DAW beat grid
     private var wasTransportMoving: Bool = false
@@ -159,10 +169,20 @@ final class DSPKernel: @unchecked Sendable {
     // MARK: - Tempo Sync
 
     /// Set interval config for drift correction. Called from main thread.
-    func setIntervalConfig(bpi: Int, intervalLength: Int) {
-        ninjamBPI = bpi
-        baseIntervalLength = intervalLength
-        correctedIntervalLength.store(intervalLength, ordering: .releasing)
+    /// With `immediate` (session start / sample-rate change) the config applies
+    /// now; otherwise it is staged and applied at the next interval boundary so
+    /// the current interval completes on the old grid.
+    func setIntervalConfig(bpi: Int, intervalLength: Int, immediate: Bool = false) {
+        if immediate || baseIntervalLength.load(ordering: .relaxed) <= 0 {
+            hasPendingConfig.store(false, ordering: .releasing)
+            ninjamBPI.store(bpi, ordering: .relaxed)
+            baseIntervalLength.store(intervalLength, ordering: .relaxed)
+            correctedIntervalLength.store(intervalLength, ordering: .releasing)
+        } else {
+            pendingBPI.store(bpi, ordering: .relaxed)
+            pendingIntervalLength.store(intervalLength, ordering: .relaxed)
+            hasPendingConfig.store(true, ordering: .releasing)
+        }
         needsInitialSnap.store(true, ordering: .releasing)
     }
 
@@ -199,26 +219,28 @@ final class DSPKernel: @unchecked Sendable {
         previousBeatPosition = beatPosition
 
         guard transportStarted || seekDetected || initialSnap else { return }
-        guard ninjamBPI > 0, baseIntervalLength > 0, tempo > 0 else { return }
+        let bpiValue = ninjamBPI.load(ordering: .relaxed)
+        let baseLength = baseIntervalLength.load(ordering: .relaxed)
+        guard bpiValue > 0, baseLength > 0, tempo > 0 else { return }
 
         // Only snap when host BPM ≈ NINJAM BPM
-        let ninjamBPM = Double(ninjamBPI) / (Double(baseIntervalLength) / sampleRate) * 60.0
+        let ninjamBPM = Double(bpiValue) / (Double(baseLength) / sampleRate) * 60.0
         guard abs(tempo - ninjamBPM) < 0.5 else { return }
 
         // Compute where we should be within the interval
-        let bpi = Double(ninjamBPI)
+        let bpi = Double(bpiValue)
         let beatWithinInterval = beatPosition.truncatingRemainder(dividingBy: bpi)
         let positiveBeat = beatWithinInterval >= 0 ? beatWithinInterval : beatWithinInterval + bpi
         let samplesPerBeat = 60.0 / tempo * sampleRate
         let targetPosition = Int(positiveBeat * samplesPerBeat)
-        let clampedTarget = max(0, min(targetPosition, baseIntervalLength - 1))
+        let clampedTarget = max(0, min(targetPosition, baseLength - 1))
 
         intervalBuffer?.snapSamplePosition(clampedTarget)
         remoteAudioMixer?.snapSamplePosition(clampedTarget)
         snapMetronomePosition(clampedTarget)
 
         // Also reset drift correction to base after a snap
-        correctedIntervalLength.store(baseIntervalLength, ordering: .relaxed)
+        correctedIntervalLength.store(baseLength, ordering: .relaxed)
 
         if initialSnap {
             needsInitialSnap.store(false, ordering: .releasing)
@@ -228,18 +250,20 @@ final class DSPKernel: @unchecked Sendable {
     /// Compute drift between host beat position and NINJAM interval boundary.
     /// Adjusts correctedIntervalLength by up to ±256 samples.
     private func computeDriftCorrection(hostBPM: Double, hostBeat: Double) {
-        guard ninjamBPI > 0, baseIntervalLength > 0, hostBPM > 0 else { return }
+        let bpiValue = ninjamBPI.load(ordering: .relaxed)
+        let baseLength = baseIntervalLength.load(ordering: .relaxed)
+        guard bpiValue > 0, baseLength > 0, hostBPM > 0 else { return }
 
         // Derive NINJAM's effective BPM from its interval length
-        let ninjamBPM = Double(ninjamBPI) / (Double(baseIntervalLength) / sampleRate) * 60.0
+        let ninjamBPM = Double(bpiValue) / (Double(baseLength) / sampleRate) * 60.0
         // Only correct when host BPM ≈ NINJAM BPM
         guard abs(hostBPM - ninjamBPM) < 0.5 else {
-            correctedIntervalLength.store(baseIntervalLength, ordering: .relaxed)
+            correctedIntervalLength.store(baseLength, ordering: .relaxed)
             return
         }
 
         // Expected: beat position should be a multiple of BPI at interval boundary
-        let bpi = Double(ninjamBPI)
+        let bpi = Double(bpiValue)
         let expectedBeat = (hostBeat / bpi).rounded() * bpi
         let driftBeats = hostBeat - expectedBeat
         let samplesPerBeat = 60.0 / hostBPM * sampleRate
@@ -247,7 +271,7 @@ final class DSPKernel: @unchecked Sendable {
 
         // Clamp to ±256 samples to avoid transport jump artifacts
         let correction = max(-256, min(256, -driftSamples))
-        correctedIntervalLength.store(baseIntervalLength + correction, ordering: .relaxed)
+        correctedIntervalLength.store(baseLength + correction, ordering: .relaxed)
     }
 
     // MARK: - Metronome
@@ -268,12 +292,12 @@ final class DSPKernel: @unchecked Sendable {
                               hostTempo: Double,
                               hostBeat: Double) {
         guard metronomeEnabled.load(ordering: .relaxed) != 0 else { return }
-        guard intervalBuffer != nil, ninjamBPI > 0, sampleRate > 0 else { return }
+        let bpi = ninjamBPI.load(ordering: .relaxed)
+        guard intervalBuffer != nil, bpi > 0, sampleRate > 0 else { return }
 
         let beat1Only = metronomeBeat1Only.load(ordering: .relaxed) != 0
         let clickDuration = Int(sampleRate) / 100  // ~10ms, matches njclient.cpp
         let gain: Float = 0.5
-        let bpi = ninjamBPI
 
         let buffers = UnsafeMutableAudioBufferListPointer(outputBufferList)
         guard buffers.count >= 1,
@@ -420,8 +444,16 @@ final class DSPKernel: @unchecked Sendable {
                 frameCount: Int(frameCount), intervalLength: currentIntervalLength)
         }
 
-        // At interval boundary, compute drift correction for the NEXT interval
+        // At interval boundary, apply any staged BPM/BPI change, then compute
+        // drift correction for the NEXT interval
         if boundaryHit {
+            if hasPendingConfig.exchange(false, ordering: .acquiringAndReleasing) {
+                let newBPI = pendingBPI.load(ordering: .relaxed)
+                let newLength = pendingIntervalLength.load(ordering: .relaxed)
+                ninjamBPI.store(newBPI, ordering: .relaxed)
+                baseIntervalLength.store(newLength, ordering: .relaxed)
+                correctedIntervalLength.store(newLength, ordering: .releasing)
+            }
             metronomeSamplePos = 0
             lastMetronomeBeatIndex = -1
             if tempo > 0 {

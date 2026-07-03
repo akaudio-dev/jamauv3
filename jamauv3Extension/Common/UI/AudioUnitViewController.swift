@@ -96,7 +96,7 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
 				guard let self else { return }
 				log.debug("Host sample rate changed to \(newRate) Hz")
 				if self.intervalBuffer != nil {
-					self.updateIntervalConfig()
+					self.updateIntervalConfig(immediate: true)
 				}
 			}
 			
@@ -148,7 +148,8 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         }
 
         auUnit.kernel.intervalBuffer = buffer
-        auUnit.kernel.setIntervalConfig(bpi: bpi, intervalLength: config.intervalLengthInSamples)
+        auUnit.kernel.setIntervalConfig(bpi: bpi, intervalLength: config.intervalLengthInSamples,
+                                        immediate: true)
         self.intervalBuffer = buffer
         buffer.start()
 
@@ -190,14 +191,16 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
         updateNeedsAudio()
     }
 
-    /// Update interval buffer config on BPM/BPI change
-    private func updateIntervalConfig() {
+    /// Update interval buffer config on BPM/BPI change (applied at the next
+    /// interval boundary) or on a host sample-rate change (`immediate`).
+    private func updateIntervalConfig(immediate: Bool = false) {
         guard let auUnit = audioUnit as? jamauv3ExtensionAudioUnit else { return }
         let sampleRate = auUnit.kernel.sampleRate
         let config = IntervalConfig(bpm: ninjamClient.bpm, bpi: ninjamClient.bpi, sampleRate: sampleRate)
         intervalBuffer?.updateConfig(config)
         remoteAudioMixer?.updateConfig(config)
-        auUnit.kernel.setIntervalConfig(bpi: ninjamClient.bpi, intervalLength: config.intervalLengthInSamples)
+        auUnit.kernel.setIntervalConfig(bpi: ninjamClient.bpi, intervalLength: config.intervalLengthInSamples,
+                                        immediate: immediate)
     }
 
     // MARK: - Remote Audio Mixer Wiring
@@ -346,7 +349,11 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
             ninjamClient: ninjamClient,
             onListenStart: { [weak self] url in self?.startIcecastListener(url: url) },
             onListenStop: { [weak self] in self?.stopIcecastListener() },
-            icecastPeakReader: { [weak self] in self?.icecastPlayer?.exchangePeak() ?? 0 }
+            icecastPeakReader: { [weak self] in self?.icecastPlayer?.exchangePeak() ?? 0 },
+            icecastIsAlive: { [weak self] in
+                guard let player = self?.icecastPlayer else { return false }
+                return !player.hasEnded
+            }
         )
         let host = HostingController(rootView: content)
         self.addChild(host)
