@@ -214,7 +214,8 @@ public final class OggVorbisDecoder {
         return OggAudioFormat(sampleRate: sampleRate, channels: channels, totalSamples: totalSamples)
     }
 
-    private static func readAllSamples(from vf: inout OggVorbis_File, channels: Int) throws -> [Float] {
+    private static func readAllSamples(from vf: inout OggVorbis_File, channels: Int,
+                                       maxFrames: Int? = nil) throws -> [Float] {
         var output: [Float] = []
         output.reserveCapacity(channels * 4096)
 
@@ -222,6 +223,10 @@ public final class OggVorbisDecoder {
         var pcmChannels: UnsafeMutablePointer<UnsafeMutablePointer<Float>?>?
 
         while true {
+            // Truncate at maxFrames: bounds output against decompression bombs
+            // (tiny compressed input expanding to unbounded PCM).
+            if let maxFrames, output.count >= maxFrames * channels { break }
+
             let readCount = ov_read_float(&vf, &pcmChannels, Int32(readChunkSize), &bitstream)
             if readCount == 0 { break }
             if readCount < 0 {
@@ -253,8 +258,9 @@ public final class OggVorbisDecoder {
         return DecodedOggAudio(format: format, samples: samples)
     }
 
-    /// Decode OGG data from memory
-    public static func decode(data: Data) throws -> DecodedOggAudio {
+    /// Decode OGG data from memory.
+    /// - Parameter maxFrames: If set, decoding stops (truncates) after this many frames.
+    public static func decode(data: Data, maxFrames: Int? = nil) throws -> DecodedOggAudio {
         return try data.withUnsafeBytes { bytes in
             guard let baseAddress = bytes.baseAddress else {
                 throw OggDecoderError.invalidParameter
@@ -264,7 +270,7 @@ public final class OggVorbisDecoder {
             defer { ov_clear(&vf) }
 
             let format = try extractFormat(from: &vf)
-            let samples = try readAllSamples(from: &vf, channels: format.channels)
+            let samples = try readAllSamples(from: &vf, channels: format.channels, maxFrames: maxFrames)
             _ = stream
             return DecodedOggAudio(format: format, samples: samples)
         }

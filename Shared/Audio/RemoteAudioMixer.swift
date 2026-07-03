@@ -100,6 +100,12 @@ final class RemoteAudioMixer: @unchecked Sendable {
 
     // MARK: - Configuration
 
+    /// Bounds against a hostile server: one inventing endless users/channels
+    /// (roster growth) or streaming endless interval fragments without isEnd
+    /// (accumulation growth). Legit intervals top out well below both.
+    private static let maxRemoteChannels = 64
+    private static let maxDownloadBytes = 4 * 1024 * 1024
+
     private let _intervalLength = Atomic<Int>(0)
     private let _sampleRate = Atomic<Int>(44100)
 
@@ -199,11 +205,9 @@ final class RemoteAudioMixer: @unchecked Sendable {
         channelCurrentGUID.removeAll()
         queueLock.sync { decodeQueue.removeAll() }
 
-        if let buf = tempBuffer {
-            buf.deallocate()
-            tempBuffer = nil
-            tempBufferSize = 0
-        }
+        // tempBuffer is deallocated in deinit, not here: a render callback already
+        // inside mixInto() may still be writing into it. mixInto gates on shouldStop,
+        // but an in-flight callback can be past that check when stop() runs.
 
         logger.debug("RemoteAudioMixer stopped")
     }
@@ -239,6 +243,10 @@ final class RemoteAudioMixer: @unchecked Sendable {
 
         let key = ChannelKey(username: username, channelIndex: channelIndex)
 
+        guard channelStates[key] != nil || channelStates.count < Self.maxRemoteChannels else {
+            return
+        }
+
         // Evict stale download for this channel if the previous interval's isEnd was missed
         if let oldGUID = channelCurrentGUID[key] {
             if activeDownloads.removeValue(forKey: oldGUID) != nil {
@@ -267,6 +275,15 @@ final class RemoteAudioMixer: @unchecked Sendable {
         }
 
         download.data.append(data)
+
+        guard download.data.count <= Self.maxDownloadBytes else {
+            activeDownloads.removeValue(forKey: guid)
+            if channelCurrentGUID[download.channelKey] == guid {
+                channelCurrentGUID.removeValue(forKey: download.channelKey)
+            }
+            logger.warning("Dropped oversized download interval (\(download.data.count) bytes)")
+            return
+        }
 
         if isEnd {
             activeDownloads.removeValue(forKey: guid)
@@ -356,7 +373,10 @@ final class RemoteAudioMixer: @unchecked Sendable {
 
     private func decodeAndBuffer(_ job: DecodeJob) {
         do {
-            let decoded = try OggVorbisDecoder.decode(data: job.oggData)
+            // maxFrames bounds a decompression bomb: a few MB of hostile OGG can
+            // decode to orders of magnitude more PCM than any legit interval.
+            let decoded = try OggVorbisDecoder.decode(data: job.oggData,
+                                                      maxFrames: NJ_MAX_INTERVAL_SAMPLES)
             let deinterleaved = decoded.deinterleavedSamples()
             guard let ch0 = deinterleaved.first, !ch0.isEmpty else { return }
 
@@ -432,6 +452,8 @@ final class RemoteAudioMixer: @unchecked Sendable {
                  userGains: UnsafeBufferPointer<Float>,
                  outPeaks: UnsafeMutablePointer<Float>? = nil,
                  intervalLength: Int = 0) {
+
+        guard !shouldStop.load(ordering: .acquiring) else { return }
 
         // Use passed intervalLength if nonzero, else fall back to internal config
         let intervalLength = intervalLength > 0 ? intervalLength : _intervalLength.load(ordering: .acquiring)

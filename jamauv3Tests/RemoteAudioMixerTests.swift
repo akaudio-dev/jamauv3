@@ -136,8 +136,11 @@ struct OGGDecodeTests {
         var outputR = [Float](repeating: 0, count: frameCount)
         let gains: [Float] = Array(repeating: 1.0, count: 8)
 
-        // Advance past the interval boundary to trigger the buffer swap.
-        // Interval length ≈ 13230 samples, so we need ~13 calls of 1024.
+        // Mix through a full interval. With the cold-start anchor, playback begins
+        // on the first mixInto once the decoded interval is ready (not at the next
+        // free-running boundary), so audio appears in the earliest blocks. The
+        // output buffers are mixed additively and never re-zeroed, so any block
+        // containing audio leaves a nonzero trace to assert on.
         let intervalLength = config.intervalLengthInSamples
         let callsNeeded = (intervalLength / frameCount) + 2
         for _ in 0..<callsNeeded {
@@ -147,19 +150,6 @@ struct OGGDecodeTests {
                         gains.withUnsafeBufferPointer { gainsPtr in
                             mixer.mixInto(outputBufferList: abl, frameCount: frameCount, userGains: gainsPtr)
                         }
-                    }
-                }
-            }
-        }
-
-        // Now read one more block — currentBuffer should have been swapped and contain audio
-        outputL = [Float](repeating: 0, count: frameCount)
-        outputR = [Float](repeating: 0, count: frameCount)
-        outputL.withUnsafeMutableBufferPointer { lBuf in
-            outputR.withUnsafeMutableBufferPointer { rBuf in
-                withUnsafeMutableAudioBufferList(lBuf: lBuf, rBuf: rBuf) { abl in
-                    gains.withUnsafeBufferPointer { gainsPtr in
-                        mixer.mixInto(outputBufferList: abl, frameCount: frameCount, userGains: gainsPtr)
                     }
                 }
             }
@@ -296,7 +286,9 @@ struct ResamplingTests {
         var outputR = [Float](repeating: 0, count: frameCount)
         let gains: [Float] = Array(repeating: 1.0, count: 8)
 
-        // Advance past interval boundary to trigger buffer swap
+        // Mix through a full interval. With the cold-start anchor, playback begins
+        // on the first mixInto once the decoded interval is ready; the output is
+        // mixed additively and never re-zeroed, so any audio leaves a trace.
         let intervalLength = config.intervalLengthInSamples
         let callsNeeded = (intervalLength / frameCount) + 2
         for _ in 0..<callsNeeded {
@@ -306,19 +298,6 @@ struct ResamplingTests {
                         gains.withUnsafeBufferPointer { gainsPtr in
                             mixer.mixInto(outputBufferList: abl, frameCount: frameCount, userGains: gainsPtr)
                         }
-                    }
-                }
-            }
-        }
-
-        // Now read — currentBuffer should contain resampled audio
-        outputL = [Float](repeating: 0, count: frameCount)
-        outputR = [Float](repeating: 0, count: frameCount)
-        outputL.withUnsafeMutableBufferPointer { lBuf in
-            outputR.withUnsafeMutableBufferPointer { rBuf in
-                withUnsafeMutableAudioBufferList(lBuf: lBuf, rBuf: rBuf) { abl in
-                    gains.withUnsafeBufferPointer { gainsPtr in
-                        mixer.mixInto(outputBufferList: abl, frameCount: frameCount, userGains: gainsPtr)
                     }
                 }
             }

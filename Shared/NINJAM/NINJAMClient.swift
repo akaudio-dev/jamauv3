@@ -297,6 +297,16 @@ final class NINJAMClient: ObservableObject {
                 return
             }
 
+            // The protocol caps messages at NET_MESSAGE_MAX_SIZE (netmsg.cpp rejects
+            // larger); an unchecked length would let a hostile server grow
+            // receiveBuffer toward the full 4 GiB the UInt32 can claim.
+            guard Int(header.payloadLength) <= NET_MESSAGE_MAX_SIZE else {
+                logger.error("Oversized message: type 0x\(String(header.type, radix: 16)) length \(header.payloadLength)")
+                setState(.error("Protocol error: oversized message"))
+                disconnect()
+                return
+            }
+
             let totalLength = NINJAMMessageHeader.size + Int(header.payloadLength)
 
             guard receiveBuffer.count >= totalLength else {

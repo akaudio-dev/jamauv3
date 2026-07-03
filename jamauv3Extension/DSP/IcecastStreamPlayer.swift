@@ -21,7 +21,15 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
 
     let ringBuffer: CircularBuffer
 
-    // MARK: - Stream state (accessed only from delegateQueue)
+    // MARK: - Stream state (delegateQueue, serialized against stop() by streamLock)
+
+    /// Serializes stop()'s disposal of streamID/converter against an in-flight
+    /// parse on the delegate queue: dataTask.cancel() is asynchronous, so a data
+    /// chunk can still be inside AudioFileStreamParseBytes when stop() runs.
+    /// Held for the whole parse→convert path (delegate queue) and for disposal
+    /// (stop); the AudioFileStream/AudioConverter callbacks run inside the
+    /// already-held lock and must not re-acquire it.
+    private let streamLock = NSLock()
 
     private var session: URLSession?
     private var dataTask: URLSessionDataTask?
@@ -121,6 +129,7 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
 
         // Open AudioFileStream for MP3 (most Icecast servers serve MP3)
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+        streamLock.lock()
         let status = AudioFileStreamOpen(
             selfPtr,
             icecastPropertyListener,
@@ -128,6 +137,7 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
             kAudioFileMP3Type,
             &streamID
         )
+        streamLock.unlock()
         guard status == noErr else {
             log.error("AudioFileStreamOpen failed: \(status)")
             isRunning.store(false, ordering: .releasing)
@@ -154,6 +164,9 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
         dataTask = nil
         session?.invalidateAndCancel()
         session = nil
+
+        streamLock.lock()
+        defer { streamLock.unlock() }
 
         if let sid = streamID {
             AudioFileStreamClose(sid)
@@ -401,6 +414,8 @@ extension IcecastStreamPlayer: URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        streamLock.lock()
+        defer { streamLock.unlock() }
         guard isRunning.load(ordering: .relaxed), let sid = streamID else { return }
 
         totalBytesReceived += data.count

@@ -17,6 +17,11 @@ nonisolated public let NJ_PORT: UInt16 = 2049
 /// Maximum message payload size
 public let NET_MESSAGE_MAX_SIZE = 16384
 
+/// Maximum interval length in samples (~87 s @ 48 kHz). A hostile server can
+/// advertise an absurd tempo (e.g. bpm=1, bpi=65535) whose interval would size
+/// audio buffers to terabytes; configs over this cap are treated as invalid.
+public let NJ_MAX_INTERVAL_SAMPLES = 1 << 22
+
 /// Protocol version range
 public let PROTO_VER_MIN: UInt32 = 0x00020000
 public let PROTO_VER_MAX: UInt32 = 0x0002ffff
@@ -575,7 +580,7 @@ public struct ClientSetUserMask {
 public struct ClientUploadIntervalBegin {
     public let guid: Data        // 16 bytes - transfer identifier
     public let estimatedSize: UInt32
-    public let fourCC: UInt32    // 'OGGv' (0x7667674F) for Vorbis, 0 for silence
+    public let fourCC: UInt32    // 'OGGv' (0x7647474F) for Vorbis, 0 for silence
     public let channelIndex: UInt8
 
     /// OGG Vorbis fourCC value: MAKE_NJ_FOURCC('O','G','G','v') = 'O' | ('G'<<8) | ('G'<<16) | ('v'<<24)
@@ -734,11 +739,14 @@ public struct IntervalConfig: Sendable {
         self.sampleRate = sampleRate
     }
 
-    /// Number of samples in one interval: (BPI / (BPM / 60)) * sampleRate
+    /// Number of samples in one interval: (BPI / (BPM / 60)) * sampleRate.
+    /// Returns 0 (invalid config) when over NJ_MAX_INTERVAL_SAMPLES.
     public var intervalLengthInSamples: Int {
-        guard bpm > 0 else { return 0 }
+        guard bpm > 0, bpi > 0 else { return 0 }
         let intervalSeconds = Double(bpi) * 60.0 / Double(bpm)
-        return Int(intervalSeconds * sampleRate)
+        let samples = Int(intervalSeconds * sampleRate)
+        guard samples <= NJ_MAX_INTERVAL_SAMPLES else { return 0 }
+        return samples
     }
 }
 
