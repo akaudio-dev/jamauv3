@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrei Kozlov
+
 //
 //  AudioBufferUtils.swift
 //  jamauv3Extension
@@ -46,74 +49,7 @@ class BufferedAudioBus: @unchecked Sendable {
     }
 }
 
-/// Output bus with buffer preparation for null output pointers.
-final class BufferedOutputBus: BufferedAudioBus, @unchecked Sendable {
-    
-    /// Prepares the output buffer list, copying internal buffer pointers
-    /// if the caller passed null buffer pointers.
-    func prepareOutputBufferList(_ outBufferList: UnsafeMutablePointer<AudioBufferList>,
-                                  frameCount: AUAudioFrameCount,
-                                  zeroFill: Bool) {
-        guard let originalList = originalAudioBufferList else { return }
-        
-        let byteSize = UInt32(frameCount) * UInt32(MemoryLayout<Float>.size)
-        let outBuffers = UnsafeMutableAudioBufferListPointer(outBufferList)
-        let origBuffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: originalList))
-        
-        for i in 0..<outBuffers.count {
-            outBuffers[i].mNumberChannels = origBuffers[i].mNumberChannels
-            outBuffers[i].mDataByteSize = byteSize
-            
-            if outBuffers[i].mData == nil {
-                outBuffers[i].mData = origBuffers[i].mData
-            }
-            
-            if zeroFill, let data = outBuffers[i].mData {
-                memset(data, 0, Int(byteSize))
-            }
-        }
-    }
-}
-
-/// Input bus that can pull audio data from upstream.
-final class BufferedInputBus: BufferedAudioBus, @unchecked Sendable {
-    
-    /// Pulls input data by preparing the buffer list and calling the pull block.
-    func pullInput(actionFlags: UnsafeMutablePointer<AudioUnitRenderActionFlags>,
-                   timestamp: UnsafePointer<AudioTimeStamp>,
-                   frameCount: AUAudioFrameCount,
-                   inputBusNumber: Int,
-                   pullInputBlock: AURenderPullInputBlock?) -> AUAudioUnitStatus {
-        
-        guard let pullBlock = pullInputBlock else {
-            return kAudioUnitErr_NoConnection
-        }
-        
-        guard let mutableList = mutableAudioBufferList else {
-            return kAudioUnitErr_Uninitialized
-        }
-        
-        prepareInputBufferList(frameCount: frameCount)
-        
-        return pullBlock(actionFlags, timestamp, frameCount, inputBusNumber, mutableList)
-    }
-    
-    /// Resets mutableAudioBufferList pointers from originalAudioBufferList.
-    /// Must be called each render cycle as upstream may overwrite pointers.
-    func prepareInputBufferList(frameCount: AUAudioFrameCount) {
-        guard let originalList = originalAudioBufferList,
-              let mutableList = mutableAudioBufferList else { return }
-        
-        let byteSize = UInt32(min(frameCount, maxFrames)) * UInt32(MemoryLayout<Float>.size)
-        let mutableBuffers = UnsafeMutableAudioBufferListPointer(mutableList)
-        let origBuffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: originalList))
-        
-        mutableList.pointee.mNumberBuffers = originalList.pointee.mNumberBuffers
-        
-        for i in 0..<origBuffers.count {
-            mutableBuffers[i].mNumberChannels = origBuffers[i].mNumberChannels
-            mutableBuffers[i].mData = origBuffers[i].mData
-            mutableBuffers[i].mDataByteSize = byteSize
-        }
-    }
-}
+/// Input bus wrapper: holds the AUAudioUnitBus and its pre-allocated buffer.
+/// Audio is NOT pulled through this bus — the render block pulls input directly
+/// into the host's output buffer for in-place processing (see RenderProcessor).
+final class BufferedInputBus: BufferedAudioBus, @unchecked Sendable {}

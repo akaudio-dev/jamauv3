@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrei Kozlov
+
 //
 //  NINJAMProtocol.swift
 //  jamauv3Extension
@@ -51,6 +54,32 @@ public enum NINJAMClientMessageType: UInt8 {
     case keepalive = 0xfd
 }
 
+// MARK: - Parsing Helpers
+
+/// The payload parsers index absolutely from 0 (`data[0]`, `subdata(in: 0..<8)`),
+/// which silently misparses — or traps — if a caller ever passes a `Data` slice
+/// whose `startIndex` isn't 0. Re-base defensively at each parser entry.
+@inline(__always)
+func njZeroBased(_ data: Data) -> Data {
+    data.startIndex == 0 ? data : Data(data)
+}
+
+extension String {
+    /// Bound and clean a server/peer-supplied string before it reaches app
+    /// state or UI: strip C0 controls (newlines and escapes that could spoof
+    /// system chat lines or terminal output), DEL, and bidi override
+    /// codepoints, then cap the length.
+    func njSanitized(maxLength: Int = 256) -> String {
+        let filtered = unicodeScalars.filter { scalar in
+            if scalar.value < 0x20 || scalar.value == 0x7F { return false }
+            if (0x202A...0x202E).contains(scalar.value) { return false }
+            if (0x2066...0x2069).contains(scalar.value) { return false }
+            return true
+        }
+        return String(String(String.UnicodeScalarView(filtered)).prefix(maxLength))
+    }
+}
+
 // MARK: - Message Header
 
 /// NINJAM message header: 1 byte type + 4 bytes little-endian length
@@ -67,7 +96,9 @@ public struct NINJAMMessageHeader {
 
     public init?(data: Data) {
         guard data.count >= Self.size else { return nil }
-        self.type = data[0]
+        // startIndex-relative so a Data slice parses correctly (withUnsafeBytes
+        // already exposes only the slice's own region).
+        self.type = data[data.startIndex]
         self.payloadLength = data.withUnsafeBytes { ptr in
             let base = ptr.baseAddress!.advanced(by: 1)
             return base.loadUnaligned(as: UInt32.self)
@@ -102,6 +133,7 @@ public struct ServerAuthChallenge {
     }
 
     public init?(data: Data) {
+        let data = njZeroBased(data)
         guard data.count >= 16 else { return nil }  // 8 + 4 + 4 minimum
 
         self.challenge = data.subdata(in: 0..<8)
@@ -145,6 +177,7 @@ public struct ServerAuthReply {
     }
 
     public init?(data: Data) {
+        let data = njZeroBased(data)
         guard data.count >= 1 else { return nil }
 
         self.flag = data[0]
@@ -153,7 +186,7 @@ public struct ServerAuthReply {
         if data.count > 1 {
             let msgData = data.subdata(in: 1..<data.count)
             if let nullIndex = msgData.firstIndex(of: 0) {
-                self.errorMessage = String(data: msgData[0..<nullIndex], encoding: .utf8)
+                self.errorMessage = String(data: msgData[0..<nullIndex], encoding: .utf8)?.njSanitized()
                 // maxchan is after the null terminator
                 if nullIndex + 1 < msgData.count {
                     self.maxChannels = msgData[nullIndex + 1]
@@ -161,7 +194,7 @@ public struct ServerAuthReply {
                     self.maxChannels = 32
                 }
             } else {
-                self.errorMessage = String(data: msgData, encoding: .utf8)
+                self.errorMessage = String(data: msgData, encoding: .utf8)?.njSanitized()
                 self.maxChannels = 32
             }
         } else {
@@ -231,6 +264,7 @@ public struct ServerUserInfoChangeNotify {
     public let channels: [RemoteChannelInfo]
 
     public init?(data: Data) {
+        let data = njZeroBased(data)
         var channels: [RemoteChannelInfo] = []
         var offset = 0
 
@@ -249,13 +283,13 @@ public struct ServerUserInfoChangeNotify {
 
             // Read username (null-terminated)
             guard let usernameEnd = data[offset...].firstIndex(of: 0) else { break }
-            let username = String(data: data[offset..<usernameEnd], encoding: .utf8) ?? ""
+            let username = (String(data: data[offset..<usernameEnd], encoding: .utf8) ?? "").njSanitized()
             offset = usernameEnd + 1
 
             // Read channel name (null-terminated)
             guard offset < data.count else { break }
             guard let channameEnd = data[offset...].firstIndex(of: 0) else { break }
-            let channelName = String(data: data[offset..<channameEnd], encoding: .utf8) ?? ""
+            let channelName = (String(data: data[offset..<channameEnd], encoding: .utf8) ?? "").njSanitized()
             offset = channameEnd + 1
 
             channels.append(RemoteChannelInfo(
@@ -287,6 +321,7 @@ public struct ServerDownloadIntervalBegin {
     }
 
     public init?(data: Data) {
+        let data = njZeroBased(data)
         guard data.count >= 25 else { return nil }  // 16 + 4 + 4 + 1 minimum
 
         self.guid = data.subdata(in: 0..<16)
@@ -305,9 +340,9 @@ public struct ServerDownloadIntervalBegin {
         if data.count > 25 {
             let usernameData = data.subdata(in: 25..<data.count)
             if let nullIndex = usernameData.firstIndex(of: 0) {
-                self.username = String(data: usernameData[0..<nullIndex], encoding: .utf8) ?? ""
+                self.username = (String(data: usernameData[0..<nullIndex], encoding: .utf8) ?? "").njSanitized()
             } else {
-                self.username = String(data: usernameData, encoding: .utf8) ?? ""
+                self.username = (String(data: usernameData, encoding: .utf8) ?? "").njSanitized()
             }
         } else {
             self.username = ""
@@ -327,6 +362,7 @@ public struct ServerDownloadIntervalWrite {
     }
 
     public init?(data: Data) {
+        let data = njZeroBased(data)
         guard data.count >= 17 else { return nil }  // 16 + 1 minimum
 
         self.guid = data.subdata(in: 0..<16)
@@ -692,13 +728,14 @@ public struct ServerChatMessage {
     public let messageType: MessageType
 
     public init?(data: Data) {
+        let data = njZeroBased(data)
         // Parse null-terminated strings
         var params: [String] = []
         var offset = 0
 
         while offset < data.count {
             if let nullIndex = data[offset...].firstIndex(of: 0) {
-                let str = String(data: data[offset..<nullIndex], encoding: .utf8) ?? ""
+                let str = (String(data: data[offset..<nullIndex], encoding: .utf8) ?? "").njSanitized(maxLength: 2048)
                 params.append(str)
                 offset = nullIndex + 1
             } else {

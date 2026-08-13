@@ -2,6 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- ATS exception rationale: Icecast listen streams are user/server-chosen
+	     URLs that are frequently plain http:// on arbitrary hosts, so they can't
+	     be scoped with NSExceptionDomains. NINJAM itself is raw TCP (not governed
+	     by ATS) and the ninbot.com server-list fetch is HTTPS (TLS still applies
+	     under this flag). -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

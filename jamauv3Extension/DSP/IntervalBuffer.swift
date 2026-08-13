@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrei Kozlov
+
 //
 //  IntervalBuffer.swift
 //  jamauv3Extension
@@ -59,6 +62,10 @@ final class IntervalBuffer: @unchecked Sendable {
 
     private var encodingThread: Thread?
     private let shouldStop = Atomic<Bool>(false)
+    /// Signaled by the encoding thread when its loop has fully exited.
+    private var encodingDone = DispatchSemaphore(value: 0)
+    /// Owned exclusively by the encoding thread (created, used, and released
+    /// there) — stop() must never touch it, only wait for the thread to exit.
     private var currentEncoder: OggVorbisStreamEncoder?
     private var currentGUID = Data(count: 16)
 
@@ -110,8 +117,11 @@ final class IntervalBuffer: @unchecked Sendable {
         isCapturing.store(true, ordering: .releasing)
 
         // Start encoding thread
+        let done = DispatchSemaphore(value: 0)
+        encodingDone = done
         let thread = Thread { [weak self] in
             self?.encodingLoop()
+            done.signal()
         }
         thread.name = "com.jamauv3.intervalEncoder"
         thread.qualityOfService = .userInitiated
@@ -128,14 +138,12 @@ final class IntervalBuffer: @unchecked Sendable {
         isCapturing.store(false, ordering: .releasing)
         shouldStop.store(true, ordering: .releasing)
 
-        // Wait for encoding thread to finish (with timeout)
-        let deadline = Date().addingTimeInterval(2.0)
-        while encodingThread?.isExecuting == true && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.01)
-        }
+        // Wait (bounded) for the encoding thread to drain, finalize, and
+        // release its encoder. Polling isExecuting raced a thread that hadn't
+        // been scheduled yet, and releasing currentEncoder here raced the
+        // thread's own use of it.
+        _ = encodingDone.wait(timeout: .now() + 2.0)
         encodingThread = nil
-
-        currentEncoder = nil
         logger.debug("IntervalBuffer stopped")
     }
 
@@ -239,6 +247,7 @@ final class IntervalBuffer: @unchecked Sendable {
         // On stop: drain remaining samples, finalize encoder, send EOS
         drainCaptureBuffer(into: &readBuffer, chunkSize: chunkSize)
         finishCurrentInterval()
+        currentEncoder = nil
     }
 
     /// Read all available samples from capture buffer, encode, and send.

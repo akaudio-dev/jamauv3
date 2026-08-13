@@ -15,8 +15,10 @@ APP="$BUILD_DIR/Build/Products/Debug/Jam AUv3.app"
 APPEX="$APP/Contents/PlugIns/jamauv3Extension.appex"
 
 echo "==> Killing old processes..."
-pkill -9 -f jamauv3Extension 2>/dev/null || true
-pkill -9 -f "Jam AUv3.app" 2>/dev/null || true
+# -x matches the executable name exactly; -f would match any process
+# whose argv merely mentions the path (an editor, a DAW hosting the plugin).
+pkill -9 -x jamauv3Extension 2>/dev/null || true
+pkill -9 -x "Jam AUv3" 2>/dev/null || true
 sleep 0.5
 
 # Remove /Applications copy if it exists (conflicts with DerivedData registration)
@@ -27,10 +29,17 @@ if [ -d "/Applications/Jam AUv3.app" ]; then
 fi
 
 echo "==> Cleaning..."
-xcodebuild clean -scheme jamauv3 -destination 'platform=macOS' -quiet 2>&1 | grep -E '^(error:|Clean )' || true
+xcodebuild clean -scheme jamauv3 -destination 'platform=macOS' -quiet >/dev/null 2>&1 || true
 
 echo "==> Building..."
-xcodebuild build -scheme jamauv3 -destination 'platform=macOS' -quiet 2>&1 | grep -E '^(error:|Build )' || true
+BUILD_LOG=$(mktemp)
+if ! xcodebuild build -scheme jamauv3 -destination 'platform=macOS' -quiet >"$BUILD_LOG" 2>&1; then
+    grep -E 'error:' "$BUILD_LOG" || tail -20 "$BUILD_LOG"
+    rm -f "$BUILD_LOG"
+    echo "ERROR: build failed"
+    exit 1
+fi
+rm -f "$BUILD_LOG"
 
 echo "==> Re-registering extension..."
 pluginkit -a "$APPEX" 2>/dev/null || true

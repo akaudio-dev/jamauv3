@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrei Kozlov
+
 //
 //  OggVorbisDecoder.swift
 //  jamauv3Extension
@@ -210,6 +213,12 @@ public final class OggVorbisDecoder {
         }
         let channels = Int(info.pointee.channels)
         let sampleRate = Int(info.pointee.rate)
+        // Header fields are attacker-controlled and flow into allocation sizes
+        // (frames × channels, resample ratio). NINJAM audio is mono or stereo;
+        // reject anything else before it can size a buffer.
+        guard (1...2).contains(channels), (8000...192_000).contains(sampleRate) else {
+            throw OggDecoderError.unsupported
+        }
         let totalSamples = Int64(ov_pcm_total(&vf, -1))
         return OggAudioFormat(sampleRate: sampleRate, channels: channels, totalSamples: totalSamples)
     }

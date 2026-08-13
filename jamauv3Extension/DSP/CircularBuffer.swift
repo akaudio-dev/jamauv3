@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrei Kozlov
+
 //
 //  CircularBuffer.swift
 //  jamauv3Extension
@@ -29,6 +32,9 @@ final class CircularBuffer: @unchecked Sendable {
     /// Creates a circular buffer with the specified capacity.
     /// - Parameter capacity: Maximum number of samples the buffer can hold
     init(capacity: Int) {
+        // A non-positive capacity would make the available-space math negative
+        // and bypass the == 0 guards below.
+        precondition(capacity > 0, "CircularBuffer capacity must be positive")
         self.capacity = capacity
         self.buffer = UnsafeMutablePointer<Float>.allocate(capacity: capacity)
         self.buffer.initialize(repeating: 0.0, count: capacity)
@@ -193,7 +199,7 @@ final class CircularBuffer: @unchecked Sendable {
     @discardableResult
     func peek(into destination: UnsafeMutablePointer<Float>, count: Int, offset: Int = 0) -> Int {
         let available = availableToRead
-        guard offset < available else { return 0 }
+        guard offset >= 0, offset < available else { return 0 }
 
         let toPeek = min(count, available - offset)
         if toPeek == 0 { return 0 }
@@ -214,163 +220,5 @@ final class CircularBuffer: @unchecked Sendable {
         }
 
         return toPeek
-    }
-}
-
-// MARK: - Multi-Channel Circular Buffer
-
-/// Circular buffer for multi-channel audio.
-/// Stores channels non-interleaved for efficient per-channel processing.
-final class MultiChannelCircularBuffer: @unchecked Sendable {
-
-    private let channelBuffers: [CircularBuffer]
-    let channelCount: Int
-    let frameCapacity: Int
-
-    /// Creates a multi-channel circular buffer.
-    /// - Parameters:
-    ///   - channels: Number of channels
-    ///   - capacity: Capacity in frames (samples per channel)
-    init(channels: Int, capacity: Int) {
-        self.channelCount = channels
-        self.frameCapacity = capacity
-        self.channelBuffers = (0..<channels).map { _ in CircularBuffer(capacity: capacity) }
-    }
-
-    /// Number of frames available to read (minimum across all channels)
-    var availableToRead: Int {
-        channelBuffers.map { $0.availableToRead }.min() ?? 0
-    }
-
-    /// Number of frames available to write (minimum across all channels)
-    var availableToWrite: Int {
-        channelBuffers.map { $0.availableToWrite }.min() ?? 0
-    }
-
-    var isEmpty: Bool {
-        channelBuffers.allSatisfy { $0.isEmpty }
-    }
-
-    func reset() {
-        channelBuffers.forEach { $0.reset() }
-    }
-
-    /// Writes interleaved samples to all channels.
-    /// - Parameters:
-    ///   - source: Pointer to interleaved samples
-    ///   - frameCount: Number of frames to write
-    /// - Returns: Number of frames actually written
-    @discardableResult
-    func writeInterleaved(from source: UnsafePointer<Float>, frameCount: Int) -> Int {
-        let available = availableToWrite
-        let framesToWrite = min(frameCount, available)
-
-        if framesToWrite == 0 { return 0 }
-
-        // De-interleave into temporary buffers
-        var channelData = [[Float]](repeating: [], count: channelCount)
-        for ch in 0..<channelCount {
-            channelData[ch].reserveCapacity(framesToWrite)
-        }
-
-        for frame in 0..<framesToWrite {
-            for ch in 0..<channelCount {
-                channelData[ch].append(source[frame * channelCount + ch])
-            }
-        }
-
-        // Write to each channel buffer
-        for ch in 0..<channelCount {
-            channelBuffers[ch].write(channelData[ch])
-        }
-
-        return framesToWrite
-    }
-
-    /// Writes non-interleaved samples to all channels.
-    /// - Parameters:
-    ///   - channelPointers: Array of pointers to per-channel samples
-    ///   - frameCount: Number of frames to write
-    /// - Returns: Number of frames actually written
-    @discardableResult
-    func write(channelPointers: [UnsafePointer<Float>], frameCount: Int) -> Int {
-        guard channelPointers.count == channelCount else { return 0 }
-
-        let available = availableToWrite
-        let framesToWrite = min(frameCount, available)
-
-        if framesToWrite == 0 { return 0 }
-
-        for ch in 0..<channelCount {
-            channelBuffers[ch].write(from: channelPointers[ch], count: framesToWrite)
-        }
-
-        return framesToWrite
-    }
-
-    /// Reads non-interleaved samples from all channels.
-    /// - Parameters:
-    ///   - channelPointers: Array of pointers to write per-channel samples to
-    ///   - frameCount: Number of frames to read
-    /// - Returns: Number of frames actually read
-    @discardableResult
-    func read(channelPointers: [UnsafeMutablePointer<Float>], frameCount: Int) -> Int {
-        guard channelPointers.count == channelCount else { return 0 }
-
-        let available = availableToRead
-        let framesToRead = min(frameCount, available)
-
-        if framesToRead == 0 { return 0 }
-
-        for ch in 0..<channelCount {
-            channelBuffers[ch].read(into: channelPointers[ch], count: framesToRead)
-        }
-
-        return framesToRead
-    }
-
-    /// Reads interleaved samples from all channels.
-    /// - Parameters:
-    ///   - destination: Pointer to write interleaved samples to
-    ///   - frameCount: Number of frames to read
-    /// - Returns: Number of frames actually read
-    @discardableResult
-    func readInterleaved(into destination: UnsafeMutablePointer<Float>, frameCount: Int) -> Int {
-        let available = availableToRead
-        let framesToRead = min(frameCount, available)
-
-        if framesToRead == 0 { return 0 }
-
-        // Read from each channel into temporary buffers
-        var channelData = [[Float]](repeating: [], count: channelCount)
-        for ch in 0..<channelCount {
-            channelData[ch] = channelBuffers[ch].read(count: framesToRead)
-        }
-
-        // Interleave into destination
-        for frame in 0..<framesToRead {
-            for ch in 0..<channelCount {
-                destination[frame * channelCount + ch] = channelData[ch][frame]
-            }
-        }
-
-        return framesToRead
-    }
-
-    /// Discards frames from all channels.
-    /// - Parameter frameCount: Number of frames to discard
-    /// - Returns: Number of frames actually discarded
-    @discardableResult
-    func discard(frameCount: Int) -> Int {
-        let available = availableToRead
-        let framesToDiscard = min(frameCount, available)
-
-        if framesToDiscard == 0 { return 0 }
-
-        for ch in 0..<channelCount {
-            channelBuffers[ch].discard(count: framesToDiscard)
-        }
-
-        return framesToDiscard
     }
 }

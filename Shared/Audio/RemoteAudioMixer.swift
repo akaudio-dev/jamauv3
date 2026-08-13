@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrei Kozlov
+
 //
 //  RemoteAudioMixer.swift
 //  Shared/Audio
@@ -428,7 +431,10 @@ final class RemoteAudioMixer: @unchecked Sendable {
     /// Linear interpolation resampling (matches njclient.cpp quality)
     private func linearResample(_ input: [Float], fromRate: Int, toRate: Int) -> [Float] {
         let ratio = Double(fromRate) / Double(toRate)
-        let outputCount = Int(Double(input.count) / ratio)
+        // Upsampling multiplies the sample count; a hostile low `fromRate` must not
+        // turn a capped decode into a huge allocation. Nothing past the max interval
+        // length is ever played, so truncating there loses no audio.
+        let outputCount = min(Int(Double(input.count) / ratio), NJ_MAX_INTERVAL_SAMPLES)
         guard outputCount > 0 else { return [] }
 
         var output = [Float](repeating: 0, count: outputCount)

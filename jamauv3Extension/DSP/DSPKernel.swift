@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrei Kozlov
+
 //
 //  DSPKernel.swift
 //  jamauv3Extension
@@ -143,7 +146,9 @@ final class DSPKernel: @unchecked Sendable {
     // MARK: - Initialization
     
     func initialize(inputChannelCount: Int, outputChannelCount: Int, sampleRate: Double) {
-        self.sampleRate = sampleRate
+        // The rate feeds Int conversions in metronome/drift math; an absurd
+        // host-supplied format must not be able to trap the render thread.
+        self.sampleRate = (8000...768_000).contains(sampleRate) ? sampleRate : 44100.0
     }
     
     func deInitialize() {
@@ -168,13 +173,21 @@ final class DSPKernel: @unchecked Sendable {
     /// Float bit pattern; set from main or render, read from main.
     private let needsAudioBits = Atomic<UInt32>(0)
 
+    /// Map a host-supplied parameter address to a user-gain slot, or nil.
+    /// Wrapping subtraction + Int(exactly:) so an out-of-range address from a
+    /// hostile host clamps to nil instead of trapping on the render thread.
+    private func userGainIndex(for address: AUParameterAddress) -> Int? {
+        guard let index = Int(exactly: address &- jamauv3ExtensionParameterAddress_userGainBase),
+              index >= 0, index < Self.numUsers else { return nil }
+        return index
+    }
+
     func setParameter(address: AUParameterAddress, value: AUValue) {
         if address == jamauv3ExtensionParameterAddress_needsAudio {
             needsAudioBits.store(value.bitPattern, ordering: .relaxed)
             return
         }
-        let index = Int(address - jamauv3ExtensionParameterAddress_userGainBase)
-        if index >= 0 && index < Self.numUsers {
+        if let index = userGainIndex(for: address) {
             userGainBits[index].store(value.bitPattern, ordering: .relaxed)
         }
     }
@@ -183,8 +196,7 @@ final class DSPKernel: @unchecked Sendable {
         if address == jamauv3ExtensionParameterAddress_needsAudio {
             return AUValue(Float(bitPattern: needsAudioBits.load(ordering: .relaxed)))
         }
-        let index = Int(address - jamauv3ExtensionParameterAddress_userGainBase)
-        if index >= 0 && index < Self.numUsers {
+        if let index = userGainIndex(for: address) {
             return AUValue(Float(bitPattern: userGainBits[index].load(ordering: .relaxed)))
         }
         return 0.0
@@ -436,6 +448,10 @@ final class DSPKernel: @unchecked Sendable {
         var beatPosition: Double = 0
         if let contextBlock = musicalContextBlock {
             _ = contextBlock(&tempo, nil, nil, &beatPosition, nil, nil)
+            // Host-supplied values feed Double→Int conversions below; a NaN,
+            // infinite, or absurd value must clamp, not trap the render thread.
+            if !tempo.isFinite || tempo < 0 || tempo > 10_000 { tempo = 0 }
+            if !beatPosition.isFinite || beatPosition.magnitude > 1e12 { beatPosition = 0 }
             hostTempo.store(tempo.bitPattern, ordering: .relaxed)
             hostBeatPosition.store(beatPosition.bitPattern, ordering: .relaxed)
         }
@@ -449,11 +465,23 @@ final class DSPKernel: @unchecked Sendable {
         let inputBuffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputBufferList))
         let outputBuffers = UnsafeMutableAudioBufferListPointer(outputBufferList)
 
+        // Never trust frameCount against the buffers the host actually handed us:
+        // clamp every loop to the smallest mDataByteSize so a lying host gets
+        // truncated audio, not an out-of-bounds read/write.
+        var safeFrames = Int(frameCount)
+        for buffer in outputBuffers where buffer.mData != nil {
+            safeFrames = min(safeFrames, Int(buffer.mDataByteSize) / MemoryLayout<Float>.size)
+        }
+        for buffer in inputBuffers where buffer.mData != nil {
+            safeFrames = min(safeFrames, Int(buffer.mDataByteSize) / MemoryLayout<Float>.size)
+        }
+        guard safeFrames > 0 else { return }
+
         // Check if output buffer already has audio (host pre-fill for in-place processing?)
         if outputBuffers.count >= 1, let outData = outputBuffers[0].mData {
             let outFloats = outData.assumingMemoryBound(to: Float.self)
             var peak: Float = 0
-            for i in 0..<Int(frameCount) {
+            for i in 0..<safeFrames {
                 let s = abs(outFloats[i])
                 if s > peak { peak = s }
             }
@@ -477,7 +505,7 @@ final class DSPKernel: @unchecked Sendable {
 
             // Track peak input amplitude for diagnostics
             var peak: Float = 0
-            for i in 0..<Int(frameCount) {
+            for i in 0..<safeFrames {
                 let s = abs(inputL[i])
                 if s > peak { peak = s }
             }
@@ -489,7 +517,7 @@ final class DSPKernel: @unchecked Sendable {
 
             boundaryHit = intervalBuffer.captureAudio(
                 inputL: inputL, inputR: inputR,
-                frameCount: Int(frameCount), intervalLength: currentIntervalLength)
+                frameCount: safeFrames, intervalLength: currentIntervalLength)
         }
 
         // At interval boundary, apply any staged BPM/BPI change, then compute
@@ -512,14 +540,16 @@ final class DSPKernel: @unchecked Sendable {
         // Zero output buffers — only remote audio and Icecast will be heard.
         // Input was already captured by IntervalBuffer above for NINJAM upload.
         // We don't pass mic through to output to avoid feedback on speakers.
+        // Only this segment's frames: with a mid-buffer event split, later
+        // frames are the next segment's still-unread in-place input.
         for channelIndex in 0..<outputBuffers.count {
             guard let outputData = outputBuffers[channelIndex].mData else { continue }
-            memset(outputData, 0, Int(frameCount) * MemoryLayout<Float>.size)
+            memset(outputData, 0, safeFrames * MemoryLayout<Float>.size)
         }
 
         // Mix metronome click track (host-synced when tempo available)
         mixMetronome(outputBufferList: outputBufferList,
-                     frameCount: Int(frameCount),
+                     frameCount: safeFrames,
                      intervalLength: currentIntervalLength,
                      hostTempo: tempo,
                      hostBeat: beatPosition,
@@ -535,7 +565,7 @@ final class DSPKernel: @unchecked Sendable {
         }
         mixer?.mixInto(
             outputBufferList: outputBufferList,
-            frameCount: Int(frameCount),
+            frameCount: safeFrames,
             userGains: UnsafeBufferPointer(start: gains, count: Self.numUsers),
             outPeaks: scratch,
             intervalLength: currentIntervalLength)
@@ -550,7 +580,7 @@ final class DSPKernel: @unchecked Sendable {
         }
 
         // Mix Icecast listener audio (server browser listen mode)
-        icecast?.mixInto(outputBufferList: outputBufferList, frameCount: Int(frameCount))
+        icecast?.mixInto(outputBufferList: outputBufferList, frameCount: safeFrames)
     }
     
     // MARK: - Event Handling
@@ -577,22 +607,34 @@ final class DSPKernel: @unchecked Sendable {
     }
     
     func handleMIDIEventList(now: AUEventSampleTime, event: UnsafePointer<AUMIDIEventList>) {
-        // Process MIDI events
-        let iterator = event.pointee.eventList.packet
-        for _ in 0..<event.pointee.eventList.numPackets {
-            processMIDIPacket(iterator)
-            // Note: In real implementation, you'd iterate through the packet list
+        // numPackets and wordCount are host-supplied. Cap the iteration count so
+        // a hostile value can't stall the render thread, walk the packed
+        // variable-length packets with raw 4-byte loads (a full MIDIEventPacket
+        // copy would over-read short trailing packets), and bail on any
+        // malformed wordCount.
+        let numPackets = Int(min(event.pointee.eventList.numPackets, 64))
+        guard numPackets > 0,
+              let listOffset = MemoryLayout<AUMIDIEventList>.offset(of: \.eventList),
+              let packetOffset = MemoryLayout<MIDIEventList>.offset(of: \.packet),
+              let wordCountOffset = MemoryLayout<MIDIEventPacket>.offset(of: \.wordCount),
+              let wordsOffset = MemoryLayout<MIDIEventPacket>.offset(of: \.words) else { return }
+
+        var packetPtr = UnsafeRawPointer(event) + listOffset + packetOffset
+        for _ in 0..<numPackets {
+            let wordCount = Int(packetPtr.load(fromByteOffset: wordCountOffset, as: UInt32.self))
+            guard (1...64).contains(wordCount) else { return }
+            processMIDIWord(packetPtr.load(fromByteOffset: wordsOffset, as: UInt32.self))
+            packetPtr += wordsOffset + wordCount * MemoryLayout<UInt32>.size
         }
     }
-    
-    private func processMIDIPacket(_ packet: MIDIEventPacket) {
+
+    private func processMIDIWord(_ word0: UInt32) {
         // Handle MIDI 2.0 voice messages
         // Check for note on/off to control envelope
-        let words = packet.words
-        let messageType = (words.0 >> 28) & 0xF
-        
+        let messageType = (word0 >> 28) & 0xF
+
         if messageType == 0x4 { // Channel Voice Message (MIDI 2.0)
-            let status = (words.0 >> 20) & 0xF
+            let status = (word0 >> 20) & 0xF
             switch status {
             case 0x8: // Note Off
                 noteEnvelope = 0.0

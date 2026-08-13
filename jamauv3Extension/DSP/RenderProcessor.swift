@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrei Kozlov
+
 //
 //  RenderProcessor.swift
 //  jamauv3Extension
@@ -51,6 +54,15 @@ final class RenderProcessor: @unchecked Sendable {
                 var pullFlags: AudioUnitRenderActionFlags = []
                 let err = pullBlock(&pullFlags, timestamp, frameCount, 0, outputData)
                 if err != noErr { return err }
+            } else {
+                // No input to pull: the host-provided buffer holds arbitrary memory.
+                // Zero it so stale bytes are neither captured for upload nor played.
+                let buffers = UnsafeMutableAudioBufferListPointer(outputData)
+                for i in 0..<buffers.count {
+                    if let data = buffers[i].mData {
+                        memset(data, 0, Int(buffers[i].mDataByteSize))
+                    }
+                }
             }
 
             // Process in-place: input and output are the same buffer
@@ -76,10 +88,13 @@ final class RenderProcessor: @unchecked Sendable {
         frameCount: AUAudioFrameCount,
         events: UnsafePointer<AURenderEvent>?
     ) {
-        var now = AUEventSampleTime(timestamp.pointee.mSampleTime)
+        // mSampleTime and event times are host-supplied; a NaN/infinite timestamp or an
+        // event scheduled past Int64/UInt32 range must clamp, not trap the render thread.
+        let sampleTime = timestamp.pointee.mSampleTime
+        var now = AUEventSampleTime(sampleTime.isFinite && sampleTime.magnitude < 9.2e18 ? sampleTime : 0)
         var framesRemaining = frameCount
         var nextEvent = events
-        
+
         while framesRemaining > 0 {
             // If no more events, process remaining frames and exit
             if nextEvent == nil {
@@ -94,11 +109,17 @@ final class RenderProcessor: @unchecked Sendable {
                 )
                 return
             }
-            
-            // Calculate frames until next event
+
+            // Calculate frames until next event, clamped to this render cycle
             let headEventTime = nextEvent!.pointee.head.eventSampleTime
-            let framesThisSegment = AUAudioFrameCount(max(0, headEventTime - now))
-            
+            let framesThisSegment: AUAudioFrameCount
+            if headEventTime <= now {
+                framesThisSegment = 0
+            } else {
+                let (delta, overflow) = headEventTime.subtractingReportingOverflow(now)
+                framesThisSegment = overflow ? framesRemaining : AUAudioFrameCount(min(delta, Int64(framesRemaining)))
+            }
+
             // Process frames before the next event
             if framesThisSegment > 0 {
                 let frameOffset = frameCount - framesRemaining
@@ -107,11 +128,11 @@ final class RenderProcessor: @unchecked Sendable {
                     inBufferList: inBufferList,
                     outBufferList: outBufferList,
                     now: now,
-                    frameCount: min(framesThisSegment, framesRemaining),
+                    frameCount: framesThisSegment,
                     frameOffset: frameOffset
                 )
-                
-                framesRemaining -= min(framesThisSegment, framesRemaining)
+
+                framesRemaining -= framesThisSegment
                 now += AUEventSampleTime(framesThisSegment)
             }
             
@@ -120,7 +141,10 @@ final class RenderProcessor: @unchecked Sendable {
         }
     }
     
-    /// Processes a segment of audio frames.
+    /// Processes a segment of audio frames starting at `frameOffset` within the buffers.
+    /// The kernel always processes from a buffer's start, so the segment is expressed by
+    /// temporarily advancing each mData pointer (and shrinking mDataByteSize to match,
+    /// keeping downstream bounds checks honest), then restoring the saved descriptors.
     private static func processSegment(
         kernel: DSPKernel,
         inBufferList: UnsafeMutablePointer<AudioBufferList>,
@@ -129,12 +153,57 @@ final class RenderProcessor: @unchecked Sendable {
         frameCount: AUAudioFrameCount,
         frameOffset: AUAudioFrameCount
     ) {
-        kernel.process(
-            inputBufferList: inBufferList,
-            outputBufferList: outBufferList,
-            frameCount: frameCount,
-            bufferStartTime: now
-        )
+        let byteOffset = Int(frameOffset) * MemoryLayout<Float>.size
+        if byteOffset == 0 {
+            kernel.process(
+                inputBufferList: inBufferList,
+                outputBufferList: outBufferList,
+                frameCount: frameCount,
+                bufferStartTime: now
+            )
+            return
+        }
+
+        let sameList = inBufferList == outBufferList
+        let inBuffers = UnsafeMutableAudioBufferListPointer(inBufferList)
+        let outBuffers = UnsafeMutableAudioBufferListPointer(outBufferList)
+        let savedCount = inBuffers.count + (sameList ? 0 : outBuffers.count)
+
+        // Stack scratch for the original buffer descriptors (tiny; RT-safe).
+        withUnsafeTemporaryAllocation(of: AudioBuffer.self, capacity: savedCount) { saved in
+            var idx = 0
+            advance(inBuffers, by: byteOffset, saving: saved, at: &idx)
+            if !sameList { advance(outBuffers, by: byteOffset, saving: saved, at: &idx) }
+
+            kernel.process(
+                inputBufferList: inBufferList,
+                outputBufferList: outBufferList,
+                frameCount: frameCount,
+                bufferStartTime: now
+            )
+
+            idx = 0
+            for i in 0..<inBuffers.count { inBuffers[i] = saved[idx]; idx += 1 }
+            if !sameList {
+                for i in 0..<outBuffers.count { outBuffers[i] = saved[idx]; idx += 1 }
+            }
+        }
+    }
+
+    private static func advance(
+        _ buffers: UnsafeMutableAudioBufferListPointer,
+        by byteOffset: Int,
+        saving saved: UnsafeMutableBufferPointer<AudioBuffer>,
+        at idx: inout Int
+    ) {
+        for i in 0..<buffers.count {
+            saved[idx] = buffers[i]
+            idx += 1
+            guard let base = buffers[i].mData else { continue }
+            let step = min(byteOffset, Int(buffers[i].mDataByteSize))
+            buffers[i].mData = base + step
+            buffers[i].mDataByteSize -= UInt32(step)
+        }
     }
     
     /// Handles all events occurring at or before the given time.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrei Kozlov
+
 //
 //  IcecastStreamPlayer.swift
 //  jamauv3
@@ -296,10 +299,26 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
         // Accumulate packet data directly into the raw inputDataBuffer,
         // avoiding an intermediate Swift Data allocation + copy.
         for i in 0..<Int(packetCount) {
-            guard let desc = descriptions?[i] else { continue }
-            let start = Int(desc.mStartOffset)
-            let size = Int(desc.mDataByteSize)
-            guard start >= 0, start + size <= Int(byteCount) else { continue }
+            let start: Int
+            let size: Int
+            let variableFrames: UInt32
+            if let desc = descriptions?[i] {
+                start = Int(desc.mStartOffset)
+                size = Int(desc.mDataByteSize)
+                variableFrames = desc.mVariableFramesInPacket
+            } else {
+                // CBR streams deliver no packet descriptions — synthesize them
+                // from the fixed packet size (skipping every packet here left
+                // the player prebuffering forever in silence).
+                let bytesPerPacket = Int(inputFormat.mBytesPerPacket)
+                guard bytesPerPacket > 0 else { return }
+                start = i * bytesPerPacket
+                size = bytesPerPacket
+                variableFrames = 0
+            }
+            // Overflow-safe bounds check on parser/hostile-server values.
+            guard start >= 0, size >= 0, size <= Int(byteCount),
+                  start <= Int(byteCount) - size else { continue }
 
             // Ensure raw buffer has capacity
             let needed = inputDataWritePos + size
@@ -316,8 +335,8 @@ final class IcecastStreamPlayer: NSObject, @unchecked Sendable {
 
             let adjustedDesc = AudioStreamPacketDescription(
                 mStartOffset: Int64(inputDataWritePos),
-                mVariableFramesInPacket: desc.mVariableFramesInPacket,
-                mDataByteSize: desc.mDataByteSize
+                mVariableFramesInPacket: variableFrames,
+                mDataByteSize: UInt32(size)
             )
             inputDataBuffer!.advanced(by: inputDataWritePos)
                 .copyMemory(from: data.advanced(by: start), byteCount: size)

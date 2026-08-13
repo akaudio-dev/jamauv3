@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrei Kozlov
+
 //
 //  ServerBrowser.swift
 //  jamauv3Extension
@@ -45,9 +48,15 @@ struct NINJAMServerEntry: Decodable, Identifiable {
     var maxUsers: Int { userMax?.value ?? userLimit?.value ?? 0 }
 
     var streamURL: URL? {
-        if let ssl = sslStream, let url = URL(string: ssl) { return url }
-        if let s = stream, let url = URL(string: s) { return url }
+        // Server-list JSON is untrusted; only ever hand http(s) URLs to URLSession.
+        if let ssl = sslStream, let url = URL(string: ssl), Self.isWebURL(url) { return url }
+        if let s = stream, let url = URL(string: s), Self.isWebURL(url) { return url }
         return nil
+    }
+
+    private static func isWebURL(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
     }
 }
 

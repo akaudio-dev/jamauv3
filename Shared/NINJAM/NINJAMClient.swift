@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Andrei Kozlov
+
 //
 //  NINJAMClient.swift
 //  jamauv3Extension
@@ -197,9 +200,13 @@ final class NINJAMClient: ObservableObject {
         logger.info("Connecting to \(host, privacy: .public):\(port, privacy: .public) as \(username, privacy: .public)")
         setState(.connecting)
 
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+            setState(.error("Invalid port \(port)"))
+            return
+        }
         let endpoint = NWEndpoint.hostPort(
             host: NWEndpoint.Host(host),
-            port: NWEndpoint.Port(rawValue: port)!
+            port: nwPort
         )
 
         let parameters = NWParameters.tcp
@@ -249,6 +256,10 @@ final class NINJAMClient: ObservableObject {
 
         receiveBuffer.removeAll()
         serverInfo = nil
+        // Don't retain plaintext credentials past the session; connect() sets
+        // fresh ones and auto-reconnect re-supplies them from settings.
+        username = ""
+        password = ""
     }
 
     // MARK: - Connection State Handling
@@ -308,7 +319,10 @@ final class NINJAMClient: ObservableObject {
                     let reason = self.lastServerNotice ?? "Disconnected by server"
                     self.teardown()
                     self.setState(.error(reason))
-                } else {
+                } else if self.connection === conn {
+                    // Re-check identity: a delegate callback inside
+                    // processReceivedData() could have swapped the connection;
+                    // re-arming then would attach a second receive loop to it.
                     self.startReceiving()
                 }
             }
@@ -361,34 +375,49 @@ final class NINJAMClient: ObservableObject {
     // MARK: - Message Handling
 
     private func handleMessage(type: UInt8, payload: Data) {
+        // Gate on connection state so the server can't drive our state machine:
+        // no unsolicited AUTH_REPLY jumping straight to .connected, no
+        // mid-session re-challenge (an unbounded hash oracle that also churns
+        // the UI), and no session traffic before authentication completes.
         switch type {
         case NINJAMServerMessageType.authChallenge.rawValue:
+            guard case .awaitingChallenge = state else { return dropUnexpected(type) }
             handleAuthChallenge(payload)
 
         case NINJAMServerMessageType.authReply.rawValue:
+            guard case .authenticating = state else { return dropUnexpected(type) }
             handleAuthReply(payload)
 
         case NINJAMServerMessageType.configChangeNotify.rawValue:
+            guard case .connected = state else { return dropUnexpected(type) }
             handleConfigChange(payload)
 
         case NINJAMServerMessageType.userInfoChangeNotify.rawValue:
+            guard case .connected = state else { return dropUnexpected(type) }
             handleUserInfoChange(payload)
 
         case NINJAMServerMessageType.downloadIntervalBegin.rawValue:
+            guard case .connected = state else { return dropUnexpected(type) }
             handleDownloadIntervalBegin(payload)
 
         case NINJAMServerMessageType.downloadIntervalWrite.rawValue:
+            guard case .connected = state else { return dropUnexpected(type) }
             handleDownloadIntervalWrite(payload)
 
         case NINJAMServerMessageType.keepalive.rawValue:
             break
 
         case NINJAMClientMessageType.chatMessage.rawValue:
+            guard case .connected = state else { return dropUnexpected(type) }
             handleChatMessage(payload)
 
         default:
             logger.warning("Unknown message type: 0x\(String(type, radix: 16))")
         }
+    }
+
+    private func dropUnexpected(_ type: UInt8) {
+        logger.warning("Dropping message 0x\(String(type, radix: 16)) unexpected in state \(String(describing: self.state))")
     }
 
     private func handleAuthChallenge(_ payload: Data) {
@@ -490,7 +519,9 @@ final class NINJAMClient: ObservableObject {
     private func subscribeToActiveUsers(_ channels: [RemoteChannelInfo]) {
         // Build subscriptions: subscribe to all channels for each active user
         var subscriptionsByUser: [String: UInt32] = [:]
-        for channel in channels where channel.isActive {
+        // The mask has 32 bits; higher indices would smart-shift to 0 and
+        // produce no-op subscriptions, so drop them explicitly.
+        for channel in channels where channel.isActive && channel.channelIndex < 32 {
             let mask = subscriptionsByUser[channel.username] ?? 0
             subscriptionsByUser[channel.username] = mask | (1 << UInt32(channel.channelIndex))
         }
