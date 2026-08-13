@@ -35,3 +35,13 @@ TestConfig.json
 .env
 .env.local
 *.local
+
+.fake
+# local reference material
+ninjamosx.jpg
+
+# release artifacts
+dist/
+
+# local working docs (contains device UDIDs)
+RELEASE_PLAN.md
