@@ -32,6 +32,12 @@ struct ChannelKey: Hashable, Sendable {
 struct DownloadState {
     let channelKey: ChannelKey
     var data: Data
+    /// Join-gap preview: while the owning channel hasn't started its chained playout,
+    /// this interval is also decoded progressively as fragments arrive, resampled, and
+    /// pushed into the channel's live FIFO. nil once the channel has started (or for a
+    /// channel that was already playing when this interval began).
+    var previewDecoder: OggVorbisPushdataDecoder?
+    var previewResampler = PreviewResampler()
 }
 
 /// A decode job dispatched from main thread to decode thread.
@@ -77,6 +83,76 @@ final class PlaybackBuffer: @unchecked Sendable {
     var availableToRead: Int { count - readPosition }
 }
 
+/// Live FIFO for the join-gap first-interval preview: interleaved-stereo PCM at the
+/// engine rate, appended by @MainActor (progressive pushdata decode of the in-flight
+/// interval) and drained by the render thread. A fixed-capacity ring, lazily allocated
+/// on first use so channels that never preview cost nothing. On overflow the oldest
+/// audio is dropped (skip-ahead) so a network stall never accretes latency. All access
+/// is under an os_unfair_lock (Mutex) — nanosecond holds, matching the mixer's other
+/// render-thread locks.
+final class PreviewFIFO: @unchecked Sendable {
+    private struct State {
+        var buf: [Float] = []   // ring storage (interleaved stereo); empty until first use
+        var head = 0            // read index (in floats)
+        var count = 0           // valid floats available to read
+    }
+    private let state = Mutex(State())
+    /// Capacity in frames (×2 floats). ~5 s of stereo caps the preview backlog.
+    private let capacityFloats: Int
+
+    init(capacityFrames: Int) {
+        self.capacityFloats = max(2, capacityFrames * 2)
+    }
+
+    /// Append interleaved-stereo frames (main thread). Drops oldest on overflow.
+    func append(_ samples: [Float]) {
+        guard !samples.isEmpty else { return }
+        state.withLock { s in
+            if s.buf.isEmpty {
+                s.buf = [Float](repeating: 0, count: capacityFloats)
+                s.head = 0; s.count = 0
+            }
+            let cap = s.buf.count
+            for v in samples {
+                if s.count == cap {
+                    // Full: drop the oldest frame pair to make room (skip-ahead).
+                    s.head = (s.head + 1) % cap
+                    s.count -= 1
+                }
+                let tail = (s.head + s.count) % cap
+                s.buf[tail] = v
+                s.count += 1
+            }
+        }
+    }
+
+    /// Frames currently available to read.
+    var availableFrames: Int {
+        state.withLock { $0.count / 2 }
+    }
+
+    /// Drain up to `maxFrames` interleaved-stereo frames into `dest` (render thread).
+    /// Returns frames actually read.
+    func read(into dest: UnsafeMutablePointer<Float>, maxFrames: Int) -> Int {
+        state.withLock { s in
+            guard !s.buf.isEmpty else { return 0 }
+            let cap = s.buf.count
+            let want = min(maxFrames * 2, s.count)
+            guard want > 0 else { return 0 }
+            for i in 0..<want {
+                dest[i] = s.buf[(s.head + i) % cap]
+            }
+            s.head = (s.head + want) % cap
+            s.count -= want
+            return want / 2
+        }
+    }
+
+    func clear() {
+        state.withLock { s in s.head = 0; s.count = 0 }
+    }
+}
+
 /// Double-buffered playback state per remote channel.
 /// Shared between decode thread (writes nextBuffer) and render thread (reads currentBuffer).
 final class ChannelPlaybackState: @unchecked Sendable {
@@ -93,8 +169,22 @@ final class ChannelPlaybackState: @unchecked Sendable {
     /// Atomic: written by main thread (updateUserInfo), read by render thread (mixInto).
     let gainSlot = Atomic<Int>(-1)
 
-    init(channelKey: ChannelKey) {
+    // MARK: Join-gap first-interval preview
+    /// True once the channel's first *chained* (fully-decoded) interval has begun
+    /// playing. Render thread sets it at the first buffer swap; main thread reads it
+    /// to stop feeding the preview once the real chain has taken over. Until then the
+    /// in-flight interval is previewed live from `previewFIFO`.
+    let everStarted = Atomic<Bool>(false)
+    /// Live preview audio (in-flight interval), engine-rate interleaved stereo.
+    let previewFIFO: PreviewFIFO
+    /// Render-only: preview prebuffer gate (mirrors voice `vstarted`).
+    var previewPlaying = false
+    /// Render-only: fade-out frames left after the chain takes over (0 = no fade).
+    var pfadeRemaining = 0
+
+    init(channelKey: ChannelKey, previewCapacityFrames: Int) {
         self.channelKey = channelKey
+        self.previewFIFO = PreviewFIFO(capacityFrames: previewCapacityFrames)
     }
 
     /// Take the pending buffer if one is ready (render thread).
@@ -197,6 +287,12 @@ final class RemoteAudioMixer: @unchecked Sendable {
         samplePosition.store(0, ordering: .releasing)
         clockAnchored.store(false, ordering: .releasing)
         stagedRenderChannels.withLock { $0 = nil }
+        // Fresh session: any channel state surviving a prior connection re-opens its
+        // join-gap preview so a reconnect hears the room quickly too.
+        for (_, state) in channelStates {
+            state.everStarted.store(false, ordering: .releasing)
+            state.previewFIFO.clear()
+        }
 
         let thread = Thread { [weak self] in
             self?.decodeLoop()
@@ -241,6 +337,20 @@ final class RemoteAudioMixer: @unchecked Sendable {
     func updateConfig(_ config: IntervalConfig) {
         _intervalLength.store(config.intervalLengthInSamples, ordering: .releasing)
         _sampleRate.store(Int(config.sampleRate), ordering: .releasing)
+        // Re-grid: a BPM/BPI/sample-rate change moves the interval boundary, so the
+        // first interval at the new grid re-locks up to a whole interval away. Re-open
+        // the preview window on every channel (mirrors akaudio) so that gap is bridged
+        // live too. The render thread reads everStarted; clearing the FIFO here is safe
+        // (preview simply rebuffers before playing again).
+        for (_, state) in channelStates {
+            state.everStarted.store(false, ordering: .releasing)
+            state.previewFIFO.clear()
+        }
+    }
+
+    /// Preview ring capacity — ~5 s of stereo bounds the backlog at the engine rate.
+    private var previewCapacityFrames: Int {
+        max(8000, _sampleRate.load(ordering: .acquiring)) * 5
     }
 
     deinit {
@@ -272,17 +382,23 @@ final class RemoteAudioMixer: @unchecked Sendable {
         }
         channelCurrentGUID[key] = guid
 
-        activeDownloads[guid] = DownloadState(channelKey: key, data: Data())
-
         // Ensure playback state exists for this channel
         if channelStates[key] == nil {
-            let state = ChannelPlaybackState(channelKey: key)
+            let state = ChannelPlaybackState(channelKey: key, previewCapacityFrames: previewCapacityFrames)
             if let slot = userSlots[username] {
                 state.gainSlot.store(slot, ordering: .releasing)
             }
             channelStates[key] = state
             stageRenderSnapshot()
         }
+
+        // Arm the join-gap preview for this interval only while the channel hasn't yet
+        // begun chained playout — otherwise the normal double-buffered chain handles it.
+        var download = DownloadState(channelKey: key, data: Data())
+        if let state = channelStates[key], !state.everStarted.load(ordering: .acquiring) {
+            download.previewDecoder = OggVorbisPushdataDecoder()
+        }
+        activeDownloads[guid] = download
     }
 
     /// Called with audio data fragments for a download.
@@ -300,6 +416,30 @@ final class RemoteAudioMixer: @unchecked Sendable {
             }
             logger.warning("Dropped oversized download interval (\(download.data.count) bytes)")
             return
+        }
+
+        // Join-gap preview: while this channel hasn't started chained playout, decode
+        // the in-flight interval progressively (this new fragment only — the decoder
+        // carries its own undecoded tail), resample to the engine rate, and push it
+        // into the channel's live FIFO so the room is audible within ~a second instead
+        // of a whole interval later. `download.data` still accumulates whole for the
+        // proper decode at isEnd.
+        if download.previewDecoder != nil, !data.isEmpty,
+           let state = channelStates[download.channelKey] {
+            if state.everStarted.load(ordering: .acquiring) {
+                // Chain has taken over — retire the preview decoder for this interval.
+                download.previewDecoder = nil
+            } else if let decoder = download.previewDecoder {
+                let src = decoder.feed(data)
+                if !src.isEmpty {
+                    let dstRate = _sampleRate.load(ordering: .acquiring)
+                    let out = download.previewResampler.resample(
+                        src, fromRate: decoder.sampleRate, toRate: dstRate)
+                    if !out.isEmpty {
+                        state.previewFIFO.append(out)
+                    }
+                }
+            }
         }
 
         if isEnd {
@@ -484,6 +624,13 @@ final class RemoteAudioMixer: @unchecked Sendable {
         ensureTempBuffer(frameCount: frameCount * 2)
         guard let temp = tempBuffer else { return }
 
+        // Preview pacing (join-gap first-interval preview): buffer ~0.5 s before it
+        // starts (senders' OGG pages arrive in bursts), and fade the retired preview
+        // tail over ~0.25 s when the real chained interval takes over.
+        let sr = _sampleRate.load(ordering: .acquiring)
+        let previewPrebuf = max(1, sr / 2)
+        let pfadeTotal = max(1, sr / 4)
+
         // Pick up staged channel snapshot from main thread if available
         stagedRenderChannels.withLock { staged in
             if let channels = staged {
@@ -510,8 +657,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
             if anyReady {
                 for channel in renderChannels {
                     if let next = channel.takeNextBuffer() {
-                        channel.currentBuffer = next
-                        bufferSwapCount.wrappingAdd(1, ordering: .relaxed)
+                        swapIn(channel, next, pfadeTotal: pfadeTotal)
                     }
                 }
                 pos = 0
@@ -525,8 +671,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
         if willCrossBoundary {
             for channel in renderChannels {
                 if let next = channel.takeNextBuffer() {
-                    channel.currentBuffer = next
-                    bufferSwapCount.wrappingAdd(1, ordering: .relaxed)
+                    swapIn(channel, next, pfadeTotal: pfadeTotal)
                 }
             }
         }
@@ -535,29 +680,93 @@ final class RemoteAudioMixer: @unchecked Sendable {
         pos = (pos + frameCount) % intervalLength
         samplePosition.store(pos, ordering: .releasing)
 
-        // Mix each active channel
+        // Mix each active channel: the chained (fully-decoded) interval when present,
+        // plus the join-gap preview / its fade-out for a channel that hasn't yet locked
+        // onto its chain.
         for channel in renderChannels {
-            guard let buffer = channel.currentBuffer else { continue }
-
             let slot = channel.gainSlot.load(ordering: .acquiring)
             guard slot >= 0, slot < userGains.count else { continue }
             let gain = userGains[slot]
             guard gain > 0.001 else { continue }
 
-            let ch = buffer.channels
-            let samplesRead = buffer.read(into: temp, count: frameCount * ch)
-            guard samplesRead > 0 else { continue }
-            let framesRead = samplesRead / ch
+            var chPeak: Float = 0
 
-            samplesMixedCount.wrappingAdd(framesRead, ordering: .relaxed)
-
-            let peak = additiveMix(
-                source: temp, framesRead: framesRead, sourceChannels: ch,
-                into: outputBufferList, gain: gain)
-
-            if let outPeaks, slot < 8, peak > outPeaks[slot] {
-                outPeaks[slot] = peak
+            // ---- Chained playout (double-buffered, boundary-swapped) ----
+            if let buffer = channel.currentBuffer {
+                let ch = buffer.channels
+                let samplesRead = buffer.read(into: temp, count: frameCount * ch)
+                if samplesRead > 0 {
+                    let framesRead = samplesRead / ch
+                    samplesMixedCount.wrappingAdd(framesRead, ordering: .relaxed)
+                    let peak = additiveMix(
+                        source: temp, framesRead: framesRead, sourceChannels: ch,
+                        into: outputBufferList, gain: gain)
+                    if peak > chPeak { chPeak = peak }
+                }
             }
+
+            // ---- Join-gap preview / its fade-out (interleaved stereo FIFO) ----
+            if !channel.everStarted.load(ordering: .acquiring) {
+                // Live preview of the in-flight interval. Prebuffer before starting; a
+                // dry spell re-arms the prebuffer.
+                if !channel.previewPlaying,
+                   channel.previewFIFO.availableFrames >= previewPrebuf {
+                    channel.previewPlaying = true
+                }
+                if channel.previewPlaying {
+                    let m = channel.previewFIFO.read(into: temp, maxFrames: frameCount)
+                    if m > 0 {
+                        let peak = additiveMix(
+                            source: temp, framesRead: m, sourceChannels: 2,
+                            into: outputBufferList, gain: gain)
+                        if peak > chPeak { chPeak = peak }
+                    }
+                    if m < frameCount { channel.previewPlaying = false } // ran dry
+                }
+            } else if channel.pfadeRemaining > 0 {
+                // The chain took over: fade the preview's unplayed tail out over the
+                // fade window instead of hard-cutting (loop-point handover).
+                let want = min(frameCount, channel.pfadeRemaining)
+                let m = channel.previewFIFO.read(into: temp, maxFrames: want)
+                if m > 0 {
+                    // Pre-scale by a per-frame descending ramp, then additive-mix.
+                    let base = channel.pfadeRemaining
+                    for f in 0..<m {
+                        let g = Float(base - f) / Float(pfadeTotal)
+                        temp[f * 2] *= g
+                        temp[f * 2 + 1] *= g
+                    }
+                    let peak = additiveMix(
+                        source: temp, framesRead: m, sourceChannels: 2,
+                        into: outputBufferList, gain: gain)
+                    if peak > chPeak { chPeak = peak }
+                    channel.pfadeRemaining -= m
+                } else {
+                    channel.pfadeRemaining = 0
+                }
+                if channel.pfadeRemaining <= 0 { channel.previewFIFO.clear() }
+            }
+
+            if let outPeaks, slot < 8, chPeak > outPeaks[slot] {
+                outPeaks[slot] = chPeak
+            }
+        }
+    }
+
+    /// Swap a freshly decoded interval into a channel's chained playout (render thread).
+    /// On the channel's very first chained interval this also retires the join-gap
+    /// preview: mark it started and arm a short fade-out of whatever preview audio is
+    /// still queued (the interval now replays in its proper slot — a loop-point handover).
+    @inline(__always)
+    private func swapIn(_ channel: ChannelPlaybackState, _ next: PlaybackBuffer, pfadeTotal: Int) {
+        channel.currentBuffer = next
+        bufferSwapCount.wrappingAdd(1, ordering: .relaxed)
+        if !channel.everStarted.load(ordering: .acquiring) {
+            channel.everStarted.store(true, ordering: .releasing)
+            channel.previewPlaying = false
+            let avail = channel.previewFIFO.availableFrames
+            channel.pfadeRemaining = avail > 0 ? pfadeTotal : 0
+            if channel.pfadeRemaining == 0 { channel.previewFIFO.clear() }
         }
     }
 
