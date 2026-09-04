@@ -31,7 +31,7 @@
 
 ## Current Status
 
-All core features are implemented and working: NINJAM protocol (connect, auth, chat, audio upload/download), bidirectional OGG Vorbis audio (IntervalBuffer upload + RemoteAudioMixer download), host tempo sync with drift correction and transport snap, Icecast listener mode, server browser with Join button for public servers, metronome (beat 1 / all beats, render-thread sine synthesis), per-user level meters, stereo mode, chat terminal, auto-reconnect, compact top bar UI, XPC rate-limit throttling, iOS/iPadOS support (tested on iPad Pro), deferred engine start for iOS battery savings, no mic passthrough (output = remote audio + metronome + Icecast only), join-gap first-interval live preview (progressive stb_vorbis decode of the in-flight interval). 81 tests pass (protocol, E2E, codec, pushdata decode, memory, level preservation) including with TSan.
+All core features are implemented and working: NINJAM protocol (connect, auth, chat, audio upload/download), bidirectional OGG Vorbis audio (IntervalBuffer upload + RemoteAudioMixer download), host tempo sync with drift correction and transport snap, Icecast listener mode, server browser with Join button for public servers, metronome (beat 1 / all beats, render-thread sine synthesis), per-user level meters, stereo mode, chat terminal, auto-reconnect, compact top bar UI, XPC rate-limit throttling, iOS/iPadOS support (tested on iPad Pro), deferred engine start for iOS battery savings, no mic passthrough (output = remote audio + metronome + Icecast only). 77 tests pass (protocol, E2E, codec, memory, level preservation) including with TSan.
 
 ### Interval Buffer Architecture (Upload)
 ```
@@ -99,37 +99,24 @@ HTTP bytes arrive (MP3 stream)
 
 ## Known Issues
 
-### Join-gap first-interval preview (backported from akaudio) — needs live check
-**Problem:** joining a room with someone already playing was silent for up to ~2 intervals
-(the server relays nothing of the in-progress interval, then you wait for the first *complete*
-interval to arrive and finish before any sound). At slow tempos this is tens of seconds — the
-iOS "sound starts way too late" complaint. The VCV twin (akaudio) fixed this; jamauv3 now has
-the same fix.
-**Fix (mirrors akaudio `f10881e`):** a *first-interval live preview*. Until a channel's chained
-(fully-decoded) playout locks, its in-flight interval is decoded **progressively** as OGG pages
-stream in — `OggVorbisPushdataDecoder` (stb_vorbis pushdata, via the vendored `CStbVorbis`
-package) fed from `receiveData` on each fragment — resampled (`PreviewResampler`), and pushed
-into a per-channel live `PreviewFIFO`. The render thread plays that FIFO with a ~0.5 s prebuffer
-so the room is audible within ~a second of the next downbeat. When the first chained interval
-swaps in (`swapIn` → `everStarted`), the preview tail fades out over ~0.25 s (loop-point
-handover) and retires. Re-opens on re-grid (`updateConfig`) and on reconnect (`start`). The
-inherent NINJAM latency (can't hear an interval already in progress when you join) remains — this
-only removes the extra whole-interval join gap.
-**Also retained:** the earlier *cold-start anchor* in `mixInto` — when the clock isn't anchored
-(`clockAnchored == false`, no DAW-transport snap) and the first decoded interval is ready, it
-plays immediately and resets the clock. `snapSamplePosition` sets `clockAnchored = true` so
-DAW-synced playback still wins.
-**Deliberately NOT backported:** akaudio's full per-channel *arrival-locked* chained playout
-(`bcef2c4`) replaces the global interval clock, which jamauv3 snaps to the DAW beat grid (host
-tempo sync + drift correction — a feature the VCV twin lacks). Ripping it out would break DAW
-sync; the preview already gives per-channel first-audio-on-arrival, so the chained model is left
-intact. Residual: a second user joining while the clock is already anchored can have their first
-*chained* interval land up to an interval late — but the preview covers that gap audibly.
-**Verification:** all mixer + pushdata suites pass under TSan (0 data races); `OggVorbisPushdataDecoderTests`
-proves chunked pushdata decode matches whole-buffer decode and is level-transparent.
-**Still to verify live:** join a room with someone playing, confirm the room is audible within
-~1–2 s instead of tens of seconds, the fade handover to chained playout is seamless, and
-DAW-synced mode (host BPM ≈ NINJAM BPM, transport running) still aligns to host bars.
+### Startup latency fix — unit-verified, needs live check
+Remote audio took an extra interval to start (sound appeared ~3rd pass instead of ~2nd when
+joining at a boundary). Root cause: the render interval clock (`samplePosition` in
+`RemoteAudioMixer.mixInto`) free-ran from `mixer.start()`, not aligned to the server interval
+grid, so a freshly decoded interval could wait up to a full interval for the next boundary.
+**Fix:** a *cold-start anchor* — when the clock isn't anchored yet (`clockAnchored == false`,
+i.e. no DAW-transport snap is driving it) and the first decoded interval is ready, play it
+immediately and reset the clock to that instant. `snapSamplePosition` sets `clockAnchored = true`
+so DAW-synced playback still wins. Note: the inherent NINJAM latency (can't hear an interval
+already in progress when you join) remains — this only removes the extra free-running-phase
+interval. Unit-verified: `RemoteAudioMixerTests` decode/resample tests now observe playback
+starting on the first `mixInto` after decode (they previously asserted the old boundary-wait
+timing and were updated accordingly).
+**Still to verify live:** join a room with someone playing, confirm remote audio starts
+~1 interval sooner (≈2nd pass on a boundary join) and stays in sync; re-check DAW-synced mode
+(host BPM ≈ NINJAM BPM, transport running) still aligns to host bars. Caveat: multi-user cold
+start — if one user's first interval is ready well before another's, the later one can land an
+interval behind (pre-existing risk, not made worse by this change).
 
 ### Signal Level Investigation (Open)
 User reports remote audio requires ~164% gain to match the passthrough signal level (same in both mono and stereo modes). Thorough investigation found:
@@ -186,8 +173,6 @@ User reports remote audio requires ~164% gain to match the passthrough signal le
 - **User gain range:** 0.0–2.0 (linear), default 1.0. Parameters use `.linearGain` units. UI displays as 0–200%
 - **IntervalBuffer:** 3-thread model (render → SPSC CircularBuffer → encoding thread → @MainActor callbacks). Start/stop managed by AudioUnitViewController via NINJAMClientDelegate
 - **RemoteAudioMixer:** 3-thread model (@MainActor accumulates OGG fragments → decode thread decodes to PCM → render thread mixes). Double-buffered: decode writes nextBuffer, render swaps at interval boundary. Uses PlaybackBuffer (flat linear buffer) not CircularBuffer. Lives in Shared/Audio/ (compiled into both host + extension)
-- **Join-gap preview:** per-channel first-interval live preview (see Known Issues). `@MainActor receiveData` feeds each in-flight fragment to a per-GUID `OggVorbisPushdataDecoder` (progressive stb_vorbis), resamples via `PreviewResampler`, appends to the channel's `PreviewFIFO` (locked lazily-allocated ring). Render thread (`mixInto`) plays the FIFO with ~0.5 s prebuffer while `everStarted == false`, then fades it out over ~0.25 s once the first chained interval swaps in (`swapIn`). Gated per channel; retires after the first interval; re-opens on `updateConfig`/`start`
-- **CStbVorbis:** local SwiftPM package at `Vendor/CStbVorbis` vendoring stb_vorbis (public domain) for the pushdata/progressive decode path that libvorbis' pull model (`ov_open_callbacks`) can't do. Layout: full source as `include/stb_vorbis.h` (a `.h` so SPM never compiles it as its own TU — a `.c` there causes duplicate symbols at Xcode's prelink), `impl.c` = the sole TU (`#define STB_VORBIS_NO_STDIO` + include), `include/CStbVorbis.h` = header-only view for Swift, `module.modulemap` exposes it. Linked into host + extension targets. Edit the pbxproj with the `xcodeproj` ruby gem, never by hand
 - **Download messages:** `ServerDownloadIntervalBegin` (0x04, GUID, username, channelIndex, fourCC) + `ServerDownloadIntervalWrite` (0x05, GUID, flags, audioData). Delegate passes fourCC so mixer can skip silence intervals
 - **Hostile-server hardening:** received payload lengths capped at `NET_MESSAGE_MAX_SIZE` (16 KiB, matches netmsg.cpp); `IntervalConfig.intervalLengthInSamples` returns 0 (invalid) above `NJ_MAX_INTERVAL_SAMPLES` (4M ≈ 87 s @ 48 kHz); RemoteAudioMixer caps per-GUID accumulation (4 MiB), the channel roster (64), and decoded PCM (`OggVorbisDecoder.decode(maxFrames:)`)
 - **Session lifecycle:** server-initiated close (kick/shutdown/drop) tears down immediately and surfaces a reason (the server's own kick notice when present) as `.error`; `connect()` is allowed from `.error` and resets keepalive clocks; all connection callbacks identity-check their `NWConnection` so stale events can't stomp a new session

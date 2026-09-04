@@ -34,7 +34,7 @@ Open `jamauv3.xcodeproj` in Xcode and build the `jamauv3` scheme, or:
 xcodebuild build -scheme jamauv3 -destination 'platform=macOS'
 ```
 
-Dependencies are fetched automatically via Swift Package Manager (swift-ogg and swift-vorbis for the OGG Vorbis codec); stb_vorbis is vendored locally under `Vendor/CStbVorbis` for progressive/streaming decode. See [Acknowledgements](#acknowledgements) for full attribution. `build-and-run.sh` builds, re-registers the extension with `pluginkit`, and launches the host app — useful during development, when macOS likes to cache stale extension binaries.
+Dependencies (swift-ogg and swift-vorbis for the OGG Vorbis codec) are fetched automatically via Swift Package Manager. See [Acknowledgements](#acknowledgements) for attribution. `build-and-run.sh` builds, re-registers the extension with `pluginkit`, and launches the host app — useful during development, when macOS likes to cache stale extension binaries.
 
 Tests:
 
@@ -73,6 +73,5 @@ GPL-3.0-or-later. See [LICENSE](LICENSE).
 This project builds on the work of others, all under GPL-compatible licenses:
 
 - **[NINJAM](https://www.cockos.com/ninjam/)** — the collaborative-jamming protocol, by Cockos Incorporated.
-- **[stb_vorbis](https://github.com/nothings/stb)** by Sean Barrett — public-domain single-file OGG Vorbis decoder, vendored under `Vendor/CStbVorbis` for progressive (pushdata) decode. Dual-licensed MIT / Unlicense; the original license text is preserved in the vendored source.
 - **[swift-ogg](https://github.com/readdle/swift-ogg)** and **[swift-vorbis](https://github.com/readdle/swift-vorbis)** by Readdle — Swift packages wrapping the Xiph reference codecs.
 - **libogg** and **libvorbis** by the [Xiph.Org Foundation](https://xiph.org) — the reference OGG container and Vorbis codec (BSD-style license).

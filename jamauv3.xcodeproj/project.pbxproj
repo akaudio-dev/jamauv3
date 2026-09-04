@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		0A6282AAF9C7E2EE1387DC60 /* OggVorbisPushdataDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFC8063C9FCEA76950819698 /* OggVorbisPushdataDecoder.swift */; };
 		1C7582982F1C36FE0008547A /* NINJAMClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7582942F1C36FE0008547A /* NINJAMClient.swift */; };
 		1C7582992F1C36FE0008547A /* NINJAMProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7582952F1C36FE0008547A /* NINJAMProtocol.swift */; };
 		1C75829A2F1C36FE0008547A /* NINJAMClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7582942F1C36FE0008547A /* NINJAMClient.swift */; };
@@ -17,8 +16,6 @@
 		1CDA07022F1AF65F00D4544F /* jamauv3Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 1CDA07012F1AF65F00D4544F /* jamauv3Extension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		1CDA07442F1AF65F00D4544F /* Vorbis in Frameworks */ = {isa = PBXBuildFile; productRef = 1CDA07432F1AF65F00D4544F /* Vorbis */; };
 		1CEC93F92F1C053600E4B31C /* Vorbis in Frameworks */ = {isa = PBXBuildFile; productRef = 1CDA07502F1AF66000D45450 /* Vorbis */; };
-		3EF2C864158EB53C4916D025 /* CStbVorbis in Frameworks */ = {isa = PBXBuildFile; productRef = CDB4ECF9A7B919F754E0061D /* CStbVorbis */; };
-		5AE1B3408142AC6C06202E94 /* OggVorbisPushdataDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFC8063C9FCEA76950819698 /* OggVorbisPushdataDecoder.swift */; };
 		AA00000100000000000E0001 /* OggVorbisDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000E0001 /* OggVorbisDecoder.swift */; };
 		AA00000200000000000E0001 /* OggVorbisDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000E0001 /* OggVorbisDecoder.swift */; };
 		AA00000300000000000E0001 /* OggVorbisEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000A00000000000E0001 /* OggVorbisEncoder.swift */; };
@@ -26,7 +23,6 @@
 		AA00000500000000000E0001 /* Vorbis in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000600000000000E0001 /* Vorbis */; };
 		AA00001400000000000E0001 /* Ogg in Frameworks */ = {isa = PBXBuildFile; productRef = AA00001100000000000E0001 /* Ogg */; };
 		AA00001500000000000E0001 /* Ogg in Frameworks */ = {isa = PBXBuildFile; productRef = AA00001200000000000E0001 /* Ogg */; };
-		B113C26E3A1F8AD0CAC57BCE /* CStbVorbis in Frameworks */ = {isa = PBXBuildFile; productRef = 67686F0DBABC2BB87A13B9BB /* CStbVorbis */; };
 		BB00000100000000000F0001 /* RemoteAudioMixer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000000000000000F0001 /* RemoteAudioMixer.swift */; };
 		BB00000200000000000F0001 /* RemoteAudioMixer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB00000000000000000F0001 /* RemoteAudioMixer.swift */; };
 /* End PBXBuildFile section */
@@ -85,7 +81,6 @@
 		1CDA07012F1AF65F00D4544F /* jamauv3Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = jamauv3Extension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA00000000000000000E0001 /* OggVorbisDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OggVorbisDecoder.swift; sourceTree = "<group>"; };
 		AA00000A00000000000E0001 /* OggVorbisEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OggVorbisEncoder.swift; sourceTree = "<group>"; };
-		AFC8063C9FCEA76950819698 /* OggVorbisPushdataDecoder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = OggVorbisPushdataDecoder.swift; sourceTree = "<group>"; };
 		BB00000000000000000F0001 /* RemoteAudioMixer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteAudioMixer.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -146,7 +141,6 @@
 			files = (
 				AA00000500000000000E0001 /* Vorbis in Frameworks */,
 				AA00001400000000000E0001 /* Ogg in Frameworks */,
-				B113C26E3A1F8AD0CAC57BCE /* CStbVorbis in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -171,7 +165,6 @@
 			files = (
 				1CDA07442F1AF65F00D4544F /* Vorbis in Frameworks */,
 				AA00001500000000000E0001 /* Ogg in Frameworks */,
-				3EF2C864158EB53C4916D025 /* CStbVorbis in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -225,7 +218,6 @@
 				AA00000000000000000E0001 /* OggVorbisDecoder.swift */,
 				AA00000A00000000000E0001 /* OggVorbisEncoder.swift */,
 				BB00000000000000000F0001 /* RemoteAudioMixer.swift */,
-				AFC8063C9FCEA76950819698 /* OggVorbisPushdataDecoder.swift */,
 			);
 			path = Audio;
 			sourceTree = "<group>";
@@ -254,7 +246,6 @@
 			packageProductDependencies = (
 				AA00000600000000000E0001 /* Vorbis */,
 				AA00001100000000000E0001 /* Ogg */,
-				67686F0DBABC2BB87A13B9BB /* CStbVorbis */,
 			);
 			productName = jamauv3;
 			productReference = 1CDA06C32F1AF65E00D4544F /* jamauv3.app */;
@@ -325,7 +316,6 @@
 			packageProductDependencies = (
 				1CDA07432F1AF65F00D4544F /* Vorbis */,
 				AA00001200000000000E0001 /* Ogg */,
-				CDB4ECF9A7B919F754E0061D /* CStbVorbis */,
 			);
 			productName = jamauv3Extension;
 			productReference = 1CDA07012F1AF65F00D4544F /* jamauv3Extension.appex */;
@@ -369,7 +359,6 @@
 			packageReferences = (
 				1CDA07412F1AF65F00D4544F /* XCRemoteSwiftPackageReference "swift-vorbis" */,
 				AA00001000000000000E0001 /* XCRemoteSwiftPackageReference "swift-ogg" */,
-				385CD434832662D59CD75174 /* XCLocalSwiftPackageReference "CStbVorbis" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 1CDA06C42F1AF65E00D4544F /* Products */;
@@ -425,7 +414,6 @@
 				AA00000100000000000E0001 /* OggVorbisDecoder.swift in Sources */,
 				AA00000300000000000E0001 /* OggVorbisEncoder.swift in Sources */,
 				BB00000100000000000F0001 /* RemoteAudioMixer.swift in Sources */,
-				5AE1B3408142AC6C06202E94 /* OggVorbisPushdataDecoder.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -454,7 +442,6 @@
 				AA00000200000000000E0001 /* OggVorbisDecoder.swift in Sources */,
 				AA00000400000000000E0001 /* OggVorbisEncoder.swift in Sources */,
 				BB00000200000000000F0001 /* RemoteAudioMixer.swift in Sources */,
-				0A6282AAF9C7E2EE1387DC60 /* OggVorbisPushdataDecoder.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -988,13 +975,6 @@
 		};
 /* End XCConfigurationList section */
 
-/* Begin XCLocalSwiftPackageReference section */
-		385CD434832662D59CD75174 /* XCLocalSwiftPackageReference "CStbVorbis" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = Vendor/CStbVorbis;
-		};
-/* End XCLocalSwiftPackageReference section */
-
 /* Begin XCRemoteSwiftPackageReference section */
 		1CDA07412F1AF65F00D4544F /* XCRemoteSwiftPackageReference "swift-vorbis" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -1025,11 +1005,6 @@
 			package = 1CDA07412F1AF65F00D4544F /* XCRemoteSwiftPackageReference "swift-vorbis" */;
 			productName = Vorbis;
 		};
-		67686F0DBABC2BB87A13B9BB /* CStbVorbis */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 385CD434832662D59CD75174 /* XCLocalSwiftPackageReference "CStbVorbis" */;
-			productName = CStbVorbis;
-		};
 		AA00000600000000000E0001 /* Vorbis */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 1CDA07412F1AF65F00D4544F /* XCRemoteSwiftPackageReference "swift-vorbis" */;
@@ -1044,11 +1019,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA00001000000000000E0001 /* XCRemoteSwiftPackageReference "swift-ogg" */;
 			productName = Ogg;
-		};
-		CDB4ECF9A7B919F754E0061D /* CStbVorbis */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 385CD434832662D59CD75174 /* XCLocalSwiftPackageReference "CStbVorbis" */;
-			productName = CStbVorbis;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
