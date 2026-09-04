@@ -99,24 +99,28 @@ HTTP bytes arrive (MP3 stream)
 
 ## Known Issues
 
-### Startup latency fix — unit-verified, needs live check
-Remote audio took an extra interval to start (sound appeared ~3rd pass instead of ~2nd when
-joining at a boundary). Root cause: the render interval clock (`samplePosition` in
-`RemoteAudioMixer.mixInto`) free-ran from `mixer.start()`, not aligned to the server interval
-grid, so a freshly decoded interval could wait up to a full interval for the next boundary.
-**Fix:** a *cold-start anchor* — when the clock isn't anchored yet (`clockAnchored == false`,
-i.e. no DAW-transport snap is driving it) and the first decoded interval is ready, play it
-immediately and reset the clock to that instant. `snapSamplePosition` sets `clockAnchored = true`
-so DAW-synced playback still wins. Note: the inherent NINJAM latency (can't hear an interval
-already in progress when you join) remains — this only removes the extra free-running-phase
-interval. Unit-verified: `RemoteAudioMixerTests` decode/resample tests now observe playback
-starting on the first `mixInto` after decode (they previously asserted the old boundary-wait
-timing and were updated accordingly).
-**Still to verify live:** join a room with someone playing, confirm remote audio starts
-~1 interval sooner (≈2nd pass on a boundary join) and stays in sync; re-check DAW-synced mode
-(host BPM ≈ NINJAM BPM, transport running) still aligns to host bars. Caveat: multi-user cold
-start — if one user's first interval is ready well before another's, the later one can land an
-interval behind (pre-existing risk, not made worse by this change).
+### Jam-grid playout (remote audio bar-locked to the metronome) — needs live check
+Remote audio must sit in time with the local metronome. It does so because
+`RemoteAudioMixer` has **no independent interval clock**: `DSPKernel.process()` passes
+`boundaryHit` (the exact event that also resets the metronome — from
+`IntervalBuffer.captureAudio`) into `mixer.mixInto(boundaryHit:)`, and the mixer swaps each
+channel's next fully-decoded interval into play *there*, from its downbeat (swap-or-silence).
+So a received interval's sample 0 lands on the local downbeat → bar-locked to the click, in
+both standalone (metronome self-counts, reset on `boundaryHit`) and DAW mode (capture +
+metronome snapped to host bars, so `boundaryHit` is on the host grid).
+**History:** an earlier backport of akaudio's free-running join-gap *preview* (progressive
+stb_vorbis decode played ~0.5 s behind the sender) was **reverted** — it played off-grid and
+drifted badly against the metronome. akaudio gets away with a free preview only because its
+click *is* the NINJAM grid; jamauv3's click is the local/DAW grid, a different phase, so any
+off-grid audio drifts. A prior *cold-start anchor* (mixer's own `samplePosition`/`clockAnchored`)
+was also removed — same off-grid problem.
+**Latency:** the first decoded interval plays at the next local boundary → ~1 (up to ~2)
+intervals, the canonical NINJAM latency for grid-aligned playout. Shaving the extra partial
+interval would require phasing the metronome to the incoming jam (akaudio's "click follows the
+jam grid") — deliberately not done, since jamauv3's click is anchored to the user's own
+capture/DAW grid.
+**Still to verify live:** join a room with someone playing, confirm remote audio is in time
+with the metronome (standalone AND inside a DAW), with no drift over many intervals.
 
 ### Signal Level Investigation (Open)
 User reports remote audio requires ~164% gain to match the passthrough signal level (same in both mono and stereo modes). Thorough investigation found:
@@ -165,14 +169,14 @@ User reports remote audio requires ~164% gain to match the passthrough signal le
 - **`needsAudio` parameter:** AU parameter at address 100 (boolean). Extension sets to 1.0 when NINJAM connected or Icecast listening, 0.0 when idle. On iOS, host observes this and starts/stops `AVAudioEngine` on demand (500ms debounce on stop). On macOS, engine runs immediately. Defined in `jamauv3ExtensionParameterAddresses.h`, handled in DSPKernel, set by `AudioUnitViewController.updateNeedsAudio()`, observed by `SimplePlayEngine.observeNeedsAudio()`
 - **Musical context:** `DSPKernel.musicalContextBlock` reads host tempo + beat position every render callback. `DSPKernel.transportStateBlock` reads transport moving/stopped state. Both wired in `allocateRenderResources()`. Tempo/beat stored in `hostTempo`/`hostBeatPosition` atomics (render→main thread). Used for drift correction and transport snap
 - **Drift correction:** `DSPKernel.computeDriftCorrection()` compares host beat position to nearest BPI multiple at each interval boundary. Only active when host BPM ≈ NINJAM BPM (within 0.5). Adjusts `correctedIntervalLength` by up to ±256 samples. Both IntervalBuffer and RemoteAudioMixer receive the corrected length
-- **Transport snap:** `DSPKernel.snapToBeatGridIfNeeded()` detects transport start (`transportMoving && !wasTransportMoving`), seek (beat position jump > 2× expected), and initial connect (`needsInitialSnap` flag). Snaps `samplePosition` in IntervalBuffer and RemoteAudioMixer to `(beatPos mod BPI) × samplesPerBeat`. Falls back to beat-position-change detection if `transportStateBlock` is nil. One-interval glitch at snap is acceptable — next boundary starts fresh
+- **Transport snap:** `DSPKernel.snapToBeatGridIfNeeded()` detects transport start (`transportMoving && !wasTransportMoving`), seek (beat position jump > 2× expected), and initial connect (`needsInitialSnap` flag). Snaps `samplePosition` in IntervalBuffer and the metronome to `(beatPos mod BPI) × samplesPerBeat`. RemoteAudioMixer is NOT snapped directly — it follows `boundaryHit` (from the snapped capture clock), so it tracks the snap automatically. Falls back to beat-position-change detection if `transportStateBlock` is nil. One-interval glitch at snap is acceptable — next boundary starts fresh
 - **NINJAM timing:** No server-side timestamps or beat positions. All timing is pure local sample counting against `intervalLengthInSamples`. Matches njclient.cpp and JamTaba reference implementations
 - **HUD:** `ChatEntry` struct with `.message`/`.join`/`.part`/`.topic` types. `NINJAMClient.addChatEntry()` caps at 50 entries. `AudioUnitViewController.didReceiveChatMessage` populates entries + sets `serverTopic`. Diagnostic timer reads `hostTempo` atomic → `ninjamClient.hostBPM`
 - **OGG encoder quality:** Default 0.1 ≈ 75 kbps mono. Scale: -0.1 (45 kbps) → 0.0 (64 kbps) → 0.1 (75 kbps) → 0.3 (95 kbps) → 0.5 (110 kbps) → 0.75 (140 kbps) → 1.0 (240 kbps). Codec is lossy (psychoacoustic, like MP3) but level-transparent (RMS preserved at ~100%)
 - **Stereo mode:** Configurable via `ConnectionSettings.stereo` toggle (persisted to UserDefaults). Mono: `(L+R)×0.5` mixdown, 1-channel OGG. Stereo: interleaved L/R capture, 2-channel OGG. Both IntervalBuffer and RemoteAudioMixer handle mono and stereo independently
 - **User gain range:** 0.0–2.0 (linear), default 1.0. Parameters use `.linearGain` units. UI displays as 0–200%
 - **IntervalBuffer:** 3-thread model (render → SPSC CircularBuffer → encoding thread → @MainActor callbacks). Start/stop managed by AudioUnitViewController via NINJAMClientDelegate
-- **RemoteAudioMixer:** 3-thread model (@MainActor accumulates OGG fragments → decode thread decodes to PCM → render thread mixes). Double-buffered: decode writes nextBuffer, render swaps at interval boundary. Uses PlaybackBuffer (flat linear buffer) not CircularBuffer. Lives in Shared/Audio/ (compiled into both host + extension)
+- **RemoteAudioMixer:** 3-thread model (@MainActor accumulates OGG fragments → decode thread decodes to PCM → render thread mixes). Double-buffered: decode writes nextBuffer, render swaps it into currentBuffer when `mixInto(boundaryHit:)` is true. **No independent clock** — the boundary comes from `DSPKernel.boundaryHit` (the metronome's grid), so remote audio is bar-locked to the click (jam-grid model, see Known Issues). Swap-or-silence: a channel with no interval ready at the boundary falls silent (dropout) rather than bleeding off-grid. Uses PlaybackBuffer (flat linear buffer) not CircularBuffer. Lives in Shared/Audio/ (compiled into both host + extension)
 - **Download messages:** `ServerDownloadIntervalBegin` (0x04, GUID, username, channelIndex, fourCC) + `ServerDownloadIntervalWrite` (0x05, GUID, flags, audioData). Delegate passes fourCC so mixer can skip silence intervals
 - **Hostile-server hardening:** received payload lengths capped at `NET_MESSAGE_MAX_SIZE` (16 KiB, matches netmsg.cpp); `IntervalConfig.intervalLengthInSamples` returns 0 (invalid) above `NJ_MAX_INTERVAL_SAMPLES` (4M ≈ 87 s @ 48 kHz); RemoteAudioMixer caps per-GUID accumulation (4 MiB), the channel roster (64), and decoded PCM (`OggVorbisDecoder.decode(maxFrames:)`)
 - **Session lifecycle:** server-initiated close (kick/shutdown/drop) tears down immediately and surfaces a reason (the server's own kick notice when present) as `.error`; `connect()` is allowed from `.error` and resets keepalive clocks; all connection callbacks identity-check their `NWConnection` so stale events can't stomp a new session

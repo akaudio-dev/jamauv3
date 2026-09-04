@@ -154,16 +154,6 @@ final class RemoteAudioMixer: @unchecked Sendable {
 
     // MARK: - Render Thread State
 
-    /// Sample position within current interval (render thread only)
-    private let samplePosition = Atomic<Int>(0)
-
-    /// True once the interval clock has been anchored to a real boundary — either by a
-    /// DAW-transport snap (snapSamplePosition) or by the cold-start anchor in mixInto().
-    /// Until then the very first decoded interval is played immediately and the clock is
-    /// reset to that instant, so a freshly decoded interval doesn't wait up to a full
-    /// interval for the free-running boundary (the startup-latency bug).
-    private let clockAnchored = Atomic<Bool>(false)
-
     /// Snapshot of channels for render thread — updated at boundaries.
     /// Pre-allocated with capacity to avoid heap allocation on render thread.
     private var renderChannels: [ChannelPlaybackState] = {
@@ -194,8 +184,6 @@ final class RemoteAudioMixer: @unchecked Sendable {
         shouldStop.store(false, ordering: .releasing)
         _intervalLength.store(config.intervalLengthInSamples, ordering: .releasing)
         _sampleRate.store(Int(config.sampleRate), ordering: .releasing)
-        samplePosition.store(0, ordering: .releasing)
-        clockAnchored.store(false, ordering: .releasing)
         stagedRenderChannels.withLock { $0 = nil }
 
         let thread = Thread { [weak self] in
@@ -454,29 +442,24 @@ final class RemoteAudioMixer: @unchecked Sendable {
 
     // MARK: - Render Thread API
 
-    /// Snap the sample position to align with the DAW beat grid.
-    /// Called from DSPKernel.process() on transport start/seek. RT-safe (single atomic store).
-    func snapSamplePosition(_ newPosition: Int) {
-        samplePosition.store(newPosition, ordering: .releasing)
-        // A DAW-transport snap defines the clock phase; suppress the cold-start anchor.
-        clockAnchored.store(true, ordering: .releasing)
-    }
-
     /// Mix remote audio into the output buffer. Called from DSPKernel.process().
     /// Nearly RT-safe: only a brief Mutex lock (os_unfair_lock, nanosecond hold time) for snapshot pickup.
     /// userGains is passed as UnsafeBufferPointer to avoid Array retain/release on the render thread.
     /// outPeaks: caller-owned buffer of 8 Floats; mixer max-accumulates per-slot peaks into it.
+    ///
+    /// `boundaryHit`: true on the render callback where the LOCAL interval grid crosses a
+    /// boundary — the exact same event that resets the metronome (`DSPKernel.boundaryHit`).
+    /// Each channel's next fully-decoded interval is swapped in there and played from its
+    /// downbeat, so remote audio is bar-locked to the metronome grid (jam-grid model). A
+    /// channel with no interval ready at the boundary falls silent for that interval (a
+    /// dropout, canonical NINJAM) rather than bleeding the previous one off-grid.
     func mixInto(outputBufferList: UnsafeMutablePointer<AudioBufferList>,
                  frameCount: Int,
                  userGains: UnsafeBufferPointer<Float>,
                  outPeaks: UnsafeMutablePointer<Float>? = nil,
-                 intervalLength: Int = 0) {
+                 boundaryHit: Bool = false) {
 
         guard !shouldStop.load(ordering: .acquiring) else { return }
-
-        // Use passed intervalLength if nonzero, else fall back to internal config
-        let intervalLength = intervalLength > 0 ? intervalLength : _intervalLength.load(ordering: .acquiring)
-        guard intervalLength > 0 else { return }
 
         mixCallCount.wrappingAdd(1, ordering: .relaxed)
 
@@ -492,48 +475,15 @@ final class RemoteAudioMixer: @unchecked Sendable {
             }
         }
 
-        // Track sample position and detect boundary
-        var pos = samplePosition.load(ordering: .acquiring)
-
-        // Cold-start anchor: if the clock isn't anchored yet (we're free-running, i.e. no
-        // DAW-transport snap is driving it) and the first decoded interval is ready, start
-        // playing it now and reset the clock to this instant. This aligns the interval
-        // boundary to the real server interval grid, so a freshly decoded interval plays as
-        // soon as it arrives instead of waiting up to a full interval for the free-running
-        // boundary. When DAW-synced, snapSamplePosition() has already set clockAnchored, so
-        // we defer to that alignment instead.
-        if !clockAnchored.load(ordering: .acquiring) {
-            var anyReady = false
+        // At the interval boundary, start each channel's next interval from its downbeat
+        // (swap-or-silence). Between boundaries the current interval is read sequentially,
+        // so sample 0 lands on the downbeat — bar-locked to the metronome.
+        if boundaryHit {
             for channel in renderChannels {
-                if channel.hasNextBuffer { anyReady = true; break }
-            }
-            if anyReady {
-                for channel in renderChannels {
-                    if let next = channel.takeNextBuffer() {
-                        channel.currentBuffer = next
-                        bufferSwapCount.wrappingAdd(1, ordering: .relaxed)
-                    }
-                }
-                pos = 0
-                clockAnchored.store(true, ordering: .releasing)
+                channel.currentBuffer = channel.takeNextBuffer()
+                bufferSwapCount.wrappingAdd(1, ordering: .relaxed)
             }
         }
-
-        let willCrossBoundary = pos + frameCount >= intervalLength
-
-        // At interval boundary, swap buffers
-        if willCrossBoundary {
-            for channel in renderChannels {
-                if let next = channel.takeNextBuffer() {
-                    channel.currentBuffer = next
-                    bufferSwapCount.wrappingAdd(1, ordering: .relaxed)
-                }
-            }
-        }
-
-        // Update position
-        pos = (pos + frameCount) % intervalLength
-        samplePosition.store(pos, ordering: .releasing)
 
         // Mix each active channel
         for channel in renderChannels {

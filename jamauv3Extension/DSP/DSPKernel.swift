@@ -289,7 +289,8 @@ final class DSPKernel: @unchecked Sendable {
         let clampedTarget = max(0, min(targetPosition, baseLength - 1))
 
         capture?.snapSamplePosition(clampedTarget)
-        mixer?.snapSamplePosition(clampedTarget)
+        // The mixer has no independent clock: it swaps intervals on `boundaryHit`, which
+        // comes from the (snapped) capture clock, so it follows this snap automatically.
         snapMetronomePosition(clampedTarget)
 
         // Also reset drift correction to base after a snap
@@ -568,7 +569,7 @@ final class DSPKernel: @unchecked Sendable {
             frameCount: safeFrames,
             userGains: UnsafeBufferPointer(start: gains, count: Self.numUsers),
             outPeaks: scratch,
-            intervalLength: currentIntervalLength)
+            boundaryHit: boundaryHit)
         // Publish peaks from this render callback (max-accumulate into atomic storage;
         // the load/compare/store pair may lose an update racing exchangeUserPeak — a
         // one-tick meter blip, not a correctness issue)

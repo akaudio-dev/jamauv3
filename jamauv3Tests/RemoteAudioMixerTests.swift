@@ -139,19 +139,19 @@ struct OGGDecodeTests {
         var outputR = [Float](repeating: 0, count: frameCount)
         let gains: [Float] = Array(repeating: 1.0, count: 8)
 
-        // Mix through a full interval. With the cold-start anchor, playback begins
-        // on the first mixInto once the decoded interval is ready (not at the next
-        // free-running boundary), so audio appears in the earliest blocks. The
-        // output buffers are mixed additively and never re-zeroed, so any block
-        // containing audio leaves a nonzero trace to assert on.
+        // Mix through a full interval. Playback is bar-locked to the grid: the decoded
+        // interval swaps in on a boundary (boundaryHit == true), then plays from its
+        // downbeat. The output buffers are mixed additively and never re-zeroed, so any
+        // block containing audio leaves a nonzero trace to assert on.
         let intervalLength = config.intervalLengthInSamples
         let callsNeeded = (intervalLength / frameCount) + 2
-        for _ in 0..<callsNeeded {
+        for i in 0..<callsNeeded {
             outputL.withUnsafeMutableBufferPointer { lBuf in
                 outputR.withUnsafeMutableBufferPointer { rBuf in
                     withUnsafeMutableAudioBufferList(lBuf: lBuf, rBuf: rBuf) { abl in
                         gains.withUnsafeBufferPointer { gainsPtr in
-                            mixer.mixInto(outputBufferList: abl, frameCount: frameCount, userGains: gainsPtr)
+                            mixer.mixInto(outputBufferList: abl, frameCount: frameCount,
+                                          userGains: gainsPtr, boundaryHit: i == 0)
                         }
                     }
                 }
@@ -191,12 +191,13 @@ struct GainTests {
         var outputR = [Float](repeating: 0, count: frameCount)
         let gains: [Float] = Array(repeating: 0.0, count: 8)
 
-        // Force boundary + mix with gain=0
+        // Swap the decoded interval in at a boundary, then mix with gain=0.
         outputL.withUnsafeMutableBufferPointer { lBuf in
             outputR.withUnsafeMutableBufferPointer { rBuf in
                 withUnsafeMutableAudioBufferList(lBuf: lBuf, rBuf: rBuf) { abl in
                     gains.withUnsafeBufferPointer { gainsPtr in
-                        mixer.mixInto(outputBufferList: abl, frameCount: frameCount, userGains: gainsPtr)
+                        mixer.mixInto(outputBufferList: abl, frameCount: frameCount,
+                                      userGains: gainsPtr, boundaryHit: true)
                     }
                 }
             }
@@ -294,12 +295,13 @@ struct ResamplingTests {
         // mixed additively and never re-zeroed, so any audio leaves a trace.
         let intervalLength = config.intervalLengthInSamples
         let callsNeeded = (intervalLength / frameCount) + 2
-        for _ in 0..<callsNeeded {
+        for i in 0..<callsNeeded {
             outputL.withUnsafeMutableBufferPointer { lBuf in
                 outputR.withUnsafeMutableBufferPointer { rBuf in
                     withUnsafeMutableAudioBufferList(lBuf: lBuf, rBuf: rBuf) { abl in
                         gains.withUnsafeBufferPointer { gainsPtr in
-                            mixer.mixInto(outputBufferList: abl, frameCount: frameCount, userGains: gainsPtr)
+                            mixer.mixInto(outputBufferList: abl, frameCount: frameCount,
+                                          userGains: gainsPtr, boundaryHit: i == 0)
                         }
                     }
                 }
@@ -339,7 +341,10 @@ struct ConcurrencyTests {
                     outputR.withUnsafeMutableBufferPointer { rBuf in
                         withUnsafeMutableAudioBufferList(lBuf: lBuf, rBuf: rBuf) { abl in
                             gains.withUnsafeBufferPointer { gainsPtr in
-                                mixer.mixInto(outputBufferList: abl, frameCount: frameCount, userGains: gainsPtr)
+                                // boundaryHit every call: exercises the swap path hard
+                                // against concurrent beginDownload/receiveData.
+                                mixer.mixInto(outputBufferList: abl, frameCount: frameCount,
+                                              userGains: gainsPtr, boundaryHit: true)
                             }
                         }
                     }
@@ -431,12 +436,13 @@ struct RemoteAudioMixerMemoryTests {
 
             // Simulate render thread: advance through one full interval
             let callsNeeded = (config.intervalLengthInSamples / frameCount) + 2
-            for _ in 0..<callsNeeded {
+            for i in 0..<callsNeeded {
                 outputL.withUnsafeMutableBufferPointer { lBuf in
                     outputR.withUnsafeMutableBufferPointer { rBuf in
                         withUnsafeMutableAudioBufferList(lBuf: lBuf, rBuf: rBuf) { abl in
                             gains.withUnsafeBufferPointer { gainsPtr in
-                                mixer.mixInto(outputBufferList: abl, frameCount: frameCount, userGains: gainsPtr)
+                                mixer.mixInto(outputBufferList: abl, frameCount: frameCount,
+                                              userGains: gainsPtr, boundaryHit: i == 0)
                             }
                         }
                     }
