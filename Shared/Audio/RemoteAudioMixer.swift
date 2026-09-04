@@ -105,6 +105,8 @@ final class PreviewFIFO: @unchecked Sendable {
     }
 
     /// Append interleaved-stereo frames (main thread). Drops oldest on overflow.
+    /// Bounded to O(capacity) regardless of batch size — the render thread blocks on
+    /// this same lock, so the hold must not scale with (attacker-influenced) input.
     func append(_ samples: [Float]) {
         guard !samples.isEmpty else { return }
         state.withLock { s in
@@ -113,16 +115,33 @@ final class PreviewFIFO: @unchecked Sendable {
                 s.head = 0; s.count = 0
             }
             let cap = s.buf.count
-            for v in samples {
-                if s.count == cap {
-                    // Full: drop the oldest frame pair to make room (skip-ahead).
-                    s.head = (s.head + 1) % cap
-                    s.count -= 1
-                }
-                let tail = (s.head + s.count) % cap
-                s.buf[tail] = v
-                s.count += 1
+            // Only the last `cap` samples can survive; older ones would be overwritten
+            // immediately. Skipping past them keeps the work O(cap), not O(batch).
+            var srcStart = 0
+            if samples.count >= cap {
+                srcStart = samples.count - cap
+                s.head = 0; s.count = 0 // ring fully replaced
             }
+            let toWrite = samples.count - srcStart
+            // Drop oldest to make room (skip-ahead) if needed.
+            let free = cap - s.count
+            if toWrite > free {
+                let drop = toWrite - free
+                s.head = (s.head + drop) % cap
+                s.count -= drop
+            }
+            // Write in up to two contiguous spans (no per-element modulo).
+            var writePos = (s.head + s.count) % cap
+            samples.withUnsafeBufferPointer { sp in
+                var i = srcStart
+                while i < samples.count {
+                    let span = min(cap - writePos, samples.count - i)
+                    for k in 0..<span { s.buf[writePos + k] = sp[i + k] }
+                    writePos = (writePos + span) % cap
+                    i += span
+                }
+            }
+            s.count += toWrite
         }
     }
 

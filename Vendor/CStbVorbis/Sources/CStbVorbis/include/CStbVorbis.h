@@ -6,6 +6,7 @@
 // reach the pushdata decode API (stb_vorbis_open_pushdata,
 // stb_vorbis_decode_frame_pushdata, stb_vorbis_flush_pushdata, stb_vorbis_close).
 #define STB_VORBIS_NO_STDIO
+#define STB_VORBIS_NO_INTEGER_CONVERSION
 #define STB_VORBIS_HEADER_ONLY
 #include "stb_vorbis.h"
 #undef STB_VORBIS_HEADER_ONLY

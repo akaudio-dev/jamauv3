@@ -101,6 +101,26 @@ struct OggVorbisPushdataDecoderTests {
         #expect(decoder.channels == 0 || decoder.failed)
     }
 
+    /// PreviewFIFO must stay bounded no matter how much is appended (a hostile server
+    /// could otherwise drive unbounded growth / an unbounded render-thread lock hold),
+    /// and on overflow it keeps the most-recent audio (skip-ahead).
+    @Test("PreviewFIFO stays bounded and keeps newest audio on overflow")
+    func previewFifoBounded() {
+        let capFrames = 100
+        let fifo = PreviewFIFO(capacityFrames: capFrames)
+        var batch = [Float]()
+        for f in 0..<250 { batch.append(Float(f)); batch.append(Float(f)) } // 250 stereo frames
+        fifo.append(batch)
+        #expect(fifo.availableFrames == capFrames) // never exceeds capacity
+
+        var out = [Float](repeating: 0, count: capFrames * 2)
+        let got = out.withUnsafeMutableBufferPointer { fifo.read(into: $0.baseAddress!, maxFrames: capFrames) }
+        #expect(got == capFrames)
+        #expect(out[0] == 150.0)                 // oldest surviving frame (250 - 100)
+        #expect(out[(capFrames - 1) * 2] == 249.0) // newest frame
+        #expect(fifo.availableFrames == 0)        // fully drained
+    }
+
     /// The resampler changes the frame count by the rate ratio and preserves the
     /// fractional phase across successive chunks (no gaps/dupes at the seams).
     @Test("PreviewResampler rate conversion")

@@ -33,6 +33,13 @@ final class OggVorbisPushdataDecoder {
     private(set) var channels = 0
     private(set) var sampleRate = 0
 
+    /// Cumulative frames decoded so far — bounds a decompression bomb. A hostile
+    /// interval (a few MB of low-complexity max-blocksize packets) can decode to
+    /// orders of magnitude more PCM than any legit interval; without this the drain
+    /// loop would grow `out` (and downstream the FIFO) without limit and hang the
+    /// main thread. Mirrors the pull path's `decode(maxFrames: NJ_MAX_INTERVAL_SAMPLES)`.
+    private var decodedFrames = 0
+
     /// Bound the undecoded tail. A healthy stream stays tiny (we drain as fast as
     /// chunks arrive); a stream that keeps growing it is broken/hostile — drop and
     /// resync at the next page rather than growing unboundedly. Matches akaudio.
@@ -102,6 +109,15 @@ final class OggVorbisPushdataDecoder {
                     let R = nch >= 2 ? outputs[1] : outputs[0]
                     if let L, let R {
                         let n = Int(samples)
+                        // Decompression-bomb guard: stop and fail once cumulative
+                        // decoded frames exceed one legit interval's worth.
+                        if decodedFrames + n > NJ_MAX_INTERVAL_SAMPLES {
+                            failed = true
+                            stb_vorbis_close(handle)
+                            self.handle = nil
+                            break
+                        }
+                        decodedFrames += n
                         out.reserveCapacity(out.count + n * 2)
                         for i in 0..<n {
                             out.append(L[i])
