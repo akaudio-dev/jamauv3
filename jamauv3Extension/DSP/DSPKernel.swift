@@ -130,6 +130,12 @@ final class DSPKernel: @unchecked Sendable {
     private var previousBeatPosition: Double = 0
     let needsInitialSnap = Atomic<Bool>(false)
 
+    /// Jam-grid anchor: in standalone (no DAW transport driving), the first remote
+    /// interval defines the downbeat — the grid (metronome + capture + mixer) re-phases
+    /// to that instant so remote audio starts ~1 interval sooner and stays in time with
+    /// the click. Reset each session (setIntervalConfig); set once the anchor fires.
+    let jamGridAnchored = Atomic<Bool>(false)
+
     // MARK: - Metronome Config (main thread writes, render thread reads)
 
     let metronomeEnabled = Atomic<UInt8>(0)
@@ -236,6 +242,9 @@ final class DSPKernel: @unchecked Sendable {
             hasPendingConfig.store(true, ordering: .releasing)
         }
         needsInitialSnap.store(true, ordering: .releasing)
+        // Re-arm the jam-grid anchor so a fresh session (or re-grid) re-phases to the
+        // first remote interval at the new grid.
+        jamGridAnchored.store(false, ordering: .releasing)
     }
 
     /// Detect transport start, seek, or initial connect and snap interval position to DAW beat grid.
@@ -463,6 +472,22 @@ final class DSPKernel: @unchecked Sendable {
 
         let currentIntervalLength = correctedIntervalLength.load(ordering: .acquiring)
 
+        // Jam-grid anchor (standalone / transport not driving): the first decoded remote
+        // interval defines the downbeat. Re-phase the metronome + capture to NOW and force
+        // the mixer to swap that interval in this block, so remote audio starts in time
+        // with the click ~1 interval sooner instead of waiting for the join-anchored
+        // boundary. Inside a DAW (transport moving) the DAW snap owns alignment — skip.
+        var jamAnchorNow = false
+        if !wasTransportMoving,
+           !jamGridAnchored.load(ordering: .acquiring),
+           mixer?.hasDecodedInterval() == true {
+            jamGridAnchored.store(true, ordering: .releasing)
+            jamAnchorNow = true
+            metronomeSamplePos = 0
+            lastMetronomeBeatIndex = -1
+            capture?.snapSamplePosition(0)
+        }
+
         let inputBuffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputBufferList))
         let outputBuffers = UnsafeMutableAudioBufferListPointer(outputBufferList)
 
@@ -569,7 +594,7 @@ final class DSPKernel: @unchecked Sendable {
             frameCount: safeFrames,
             userGains: UnsafeBufferPointer(start: gains, count: Self.numUsers),
             outPeaks: scratch,
-            boundaryHit: boundaryHit)
+            boundaryHit: boundaryHit || jamAnchorNow)
         // Publish peaks from this render callback (max-accumulate into atomic storage;
         // the load/compare/store pair may lose an update racing exchangeUserPeak — a
         // one-tick meter blip, not a correctness issue)

@@ -170,6 +170,13 @@ final class RemoteAudioMixer: @unchecked Sendable {
     private var tempBuffer: UnsafeMutablePointer<Float>?
     private var tempBufferSize: Int = 0
 
+    /// True once any remote interval has decoded this session (set by decode thread,
+    /// read by DSPKernel's render thread to jam-anchor the grid on first audio).
+    private let _hasDecoded = Atomic<Bool>(false)
+
+    /// Whether at least one remote interval has been decoded this session. RT-safe.
+    func hasDecodedInterval() -> Bool { _hasDecoded.load(ordering: .acquiring) }
+
     // MARK: - Diagnostics (atomic counters readable from main thread)
     let bufferSwapCount = Atomic<Int>(0)
     let samplesMixedCount = Atomic<Int>(0)
@@ -184,6 +191,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
         shouldStop.store(false, ordering: .releasing)
         _intervalLength.store(config.intervalLengthInSamples, ordering: .releasing)
         _sampleRate.store(Int(config.sampleRate), ordering: .releasing)
+        _hasDecoded.store(false, ordering: .releasing)
         stagedRenderChannels.withLock { $0 = nil }
 
         let thread = Thread { [weak self] in
@@ -217,13 +225,23 @@ final class RemoteAudioMixer: @unchecked Sendable {
         logger.debug("RemoteAudioMixer stopped")
     }
 
-    /// Returns an array of 8 usernames indexed by slot. Called from main thread only.
+    /// Returns an array of 8 display names indexed by slot. Called from main thread only.
+    /// NINJAM usernames arrive as `name@host` (the server masks the login IP); the fader
+    /// labels have little room, so show only the `name` part.
     func slotUsernames() -> [String] {
         var result = Array(repeating: "", count: 8)
         for (username, slot) in userSlots {
-            result[slot] = username
+            result[slot] = Self.displayName(username)
         }
         return result
+    }
+
+    /// The user-visible part of a NINJAM username: everything before the first `@`
+    /// (the masked host), trimmed. Full `name@host` stays the internal roster key.
+    static func displayName(_ username: String) -> String {
+        let name = username.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? username
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        return trimmed.isEmpty ? username : trimmed
     }
 
     func updateConfig(_ config: IntervalConfig) {
@@ -410,6 +428,9 @@ final class RemoteAudioMixer: @unchecked Sendable {
             job.playbackState.nextBuffer.withLock { $0 = buffer }
 
             decodeCount.wrappingAdd(1, ordering: .relaxed)
+            // Signal the render/main side that at least one remote interval has decoded
+            // this session — DSPKernel uses this to jam-anchor the grid on first audio.
+            _hasDecoded.store(true, ordering: .releasing)
 
         } catch {
             logger.error("Failed to decode OGG: \(error)")

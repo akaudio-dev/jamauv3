@@ -213,6 +213,16 @@ struct GainTests {
 @Suite("RemoteAudioMixer - User Slots")
 struct UserSlotTests {
 
+    @Test("displayName strips the masked @host, keeps the name")
+    func displayNameStripsHost() {
+        #expect(RemoteAudioMixer.displayName("bob@57.12.34.56") == "bob")
+        #expect(RemoteAudioMixer.displayName("alice") == "alice")          // registered user, no host
+        #expect(RemoteAudioMixer.displayName("guitar_hero@x.x.x.x") == "guitar_hero")
+        #expect(RemoteAudioMixer.displayName("  spacey  @1.2.3.4") == "spacey")
+        #expect(RemoteAudioMixer.displayName("@1.2.3.4") == "@1.2.3.4")    // no name part → fall back to full
+        #expect(RemoteAudioMixer.displayName("") == "")
+    }
+
     @Test("Users get assigned sequential gain slots 0-7")
     func sequentialSlotAssignment() {
         let mixer = RemoteAudioMixer()
