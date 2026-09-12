@@ -138,6 +138,25 @@ final class DSPKernel: @unchecked Sendable {
     /// anchor fires.
     let jamGridAnchored = Atomic<Bool>(false)
 
+    // Diagnostics: times setIntervalConfig ran (re-config) and times the jam anchor
+    // actually fired (re-snap). >1 of either mid-session means the grid was re-phased
+    // and the mixer's carefully-built buffering slack was thrown away.
+    let setConfigCount = Atomic<Int>(0)
+    let jamAnchorFireCount = Atomic<Int>(0)
+
+    /// Jitter-buffer margin for the jam-grid anchor: how long each decoded remote interval
+    /// is held before its playout boundary. This is the ONLY latency added beyond the
+    /// inherent 1-interval NINJAM latency, and it is simultaneously our tolerance for
+    /// late/jittery arrivals.
+    ///
+    /// The anchor snaps the capture clock to `intervalLength - margin` (not 0), so each
+    /// interval waits exactly this long before playing. Because margin ≪ interval, the
+    /// next interval never arrives during the hold, so the single playback slot is never
+    /// overwritten and the cushion stays stable — unlike snap-to-0, whose full-interval
+    /// hold got overwritten by the next arrival and collapsed the margin to ~0 (just-in-time
+    /// playout that dropped on any jitter). Bump this if diagnostics show late-arrival drops.
+    private static let jamGridMarginSeconds = 3.0
+
     // MARK: - Metronome Config (main thread writes, render thread reads)
 
     let metronomeEnabled = Atomic<UInt8>(0)
@@ -233,6 +252,7 @@ final class DSPKernel: @unchecked Sendable {
     /// now; otherwise it is staged and applied at the next interval boundary so
     /// the current interval completes on the old grid.
     func setIntervalConfig(bpi: Int, intervalLength: Int, immediate: Bool = false) {
+        setConfigCount.wrappingAdd(1, ordering: .relaxed)
         if immediate || baseIntervalLength.load(ordering: .relaxed) <= 0 {
             hasPendingConfig.store(false, ordering: .releasing)
             ninjamBPI.store(bpi, ordering: .relaxed)
@@ -492,9 +512,16 @@ final class DSPKernel: @unchecked Sendable {
            !jamGridAnchored.load(ordering: .acquiring),
            mixer?.hasDecodedInterval() == true {
             jamGridAnchored.store(true, ordering: .releasing)
-            metronomeSamplePos = 0
+            jamAnchorFireCount.wrappingAdd(1, ordering: .relaxed)
+            // Snap so the first boundary is `margin` away (not a full interval): each
+            // interval is held ~margin before playout — a stable jitter cushion — while
+            // keeping total latency at ~1 interval + margin. See jamGridMarginSeconds.
+            let marginSamples = min(Int(Self.jamGridMarginSeconds * sampleRate),
+                                    max(currentIntervalLength - 1, 0))
+            let anchorPos = max(0, currentIntervalLength - marginSamples)
+            metronomeSamplePos = anchorPos
             lastMetronomeBeatIndex = -1
-            capture?.snapSamplePosition(0)
+            capture?.snapSamplePosition(anchorPos)
         }
 
         let inputBuffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inputBufferList))

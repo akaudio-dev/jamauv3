@@ -280,9 +280,13 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
                 }
 
                 let configRate = (self?.audioUnit as? jamauv3ExtensionAudioUnit)?.kernel.sampleRate ?? 0
+                let kernelForCounts = (self?.audioUnit as? jamauv3ExtensionAudioUnit)?.kernel
+                let setConfigs = kernelForCounts?.setConfigCount.load(ordering: .relaxed) ?? 0
+                let anchorFires = kernelForCounts?.jamAnchorFireCount.load(ordering: .relaxed) ?? 0
 
                 log.notice("""
                     Mixer stats: decodes=\(decodes, privacy: .public) swaps=\(swaps, privacy: .public) \
+                    setConfigs=\(setConfigs, privacy: .public) anchorFires=\(anchorFires, privacy: .public) \
                     swapMisses=\(swapMisses, privacy: .public) overwrites=\(overwrites, privacy: .public) \
                     mixed=\(mixed, privacy: .public) mixCalls=\(mixCalls, privacy: .public) \
                     observedRenderRate=\(String(format: "%.1f", observedRate), privacy: .public) \
