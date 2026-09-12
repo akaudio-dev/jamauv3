@@ -131,9 +131,11 @@ final class DSPKernel: @unchecked Sendable {
     let needsInitialSnap = Atomic<Bool>(false)
 
     /// Jam-grid anchor: in standalone (no DAW transport driving), the first remote
-    /// interval defines the downbeat — the grid (metronome + capture + mixer) re-phases
-    /// to that instant so remote audio starts ~1 interval sooner and stays in time with
-    /// the click. Reset each session (setIntervalConfig); set once the anchor fires.
+    /// interval defines the downbeat — the grid (metronome + capture) re-phases to that
+    /// instant so the boundary grid aligns to the jam (maximizing buffering headroom) and
+    /// remote audio stays in time with the click. The interval itself is not swapped early;
+    /// it plays at the next boundary. Reset each session (setIntervalConfig); set once the
+    /// anchor fires.
     let jamGridAnchored = Atomic<Bool>(false)
 
     // MARK: - Metronome Config (main thread writes, render thread reads)
@@ -473,16 +475,23 @@ final class DSPKernel: @unchecked Sendable {
         let currentIntervalLength = correctedIntervalLength.load(ordering: .acquiring)
 
         // Jam-grid anchor (standalone / transport not driving): the first decoded remote
-        // interval defines the downbeat. Re-phase the metronome + capture to NOW and force
-        // the mixer to swap that interval in this block, so remote audio starts in time
-        // with the click ~1 interval sooner instead of waiting for the join-anchored
-        // boundary. Inside a DAW (transport moving) the DAW snap owns alignment — skip.
-        var jamAnchorNow = false
+        // interval defines the downbeat. Re-phase the metronome + capture to NOW so the
+        // boundary grid aligns to the incoming jam, which MAXIMIZES buffering headroom:
+        // the next boundary lands ~one interval after the jam's downbeat, giving every
+        // subsequent interval a full interval of slack before its boundary.
+        //
+        // The interval is deliberately NOT swapped in this block. Playing it immediately
+        // (zero headroom) made the *next* interval race the boundary and lose — NINJAM
+        // produces one interval per period, so it can't be ready that fast. The result
+        // was a dropped second interval, then intermittent drops as jitter ate the
+        // nonexistent slack (swap-or-silence). Letting the first interval wait for the
+        // next boundary costs ~1 interval of join latency (the canonical NINJAM latency)
+        // in exchange for gapless playout. Inside a DAW (transport moving) the DAW snap
+        // owns alignment — skip.
         if !wasTransportMoving,
            !jamGridAnchored.load(ordering: .acquiring),
            mixer?.hasDecodedInterval() == true {
             jamGridAnchored.store(true, ordering: .releasing)
-            jamAnchorNow = true
             metronomeSamplePos = 0
             lastMetronomeBeatIndex = -1
             capture?.snapSamplePosition(0)
@@ -594,7 +603,7 @@ final class DSPKernel: @unchecked Sendable {
             frameCount: safeFrames,
             userGains: UnsafeBufferPointer(start: gains, count: Self.numUsers),
             outPeaks: scratch,
-            boundaryHit: boundaryHit || jamAnchorNow)
+            boundaryHit: boundaryHit)
         // Publish peaks from this render callback (max-accumulate into atomic storage;
         // the load/compare/store pair may lose an update racing exchangeUserPeak — a
         // one-tick meter blip, not a correctness issue)
