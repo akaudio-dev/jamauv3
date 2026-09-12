@@ -137,13 +137,23 @@ public class jamauv3ExtensionAudioUnit: AUAudioUnit, @unchecked Sendable
                          sampleRate: outFmt.sampleRate)
         renderProcessor?.setChannelCount(input: UInt32(inputChannelCount), output: UInt32(outputChannelCount))
 
-        // Detect sample rate change and notify listener
+        // Notify the listener whenever the true render rate is (re)established, INCLUDING
+        // the first allocation. iOS defers engine start until after connect, so interval
+        // capture is built from the kernel's *default* rate before this runs; if we only
+        // fired on later changes (lastSampleRate > 0), that first 44.1k→48k establishment
+        // was missed and the interval length + mixer rate stayed stale, drifting the grid
+        // ~8.8% and dropping intervals. Fire on any real, changed rate so the config
+        // reconciles to the actual render rate.
         let newRate = outFmt.sampleRate
-        if lastSampleRate > 0 && newRate != lastSampleRate {
-            log.info("Sample rate changed: \(self.lastSampleRate, privacy: .public) → \(newRate, privacy: .public) Hz")
+        if newRate > 0 && newRate != lastSampleRate {
+            if lastSampleRate > 0 {
+                log.info("Sample rate changed: \(self.lastSampleRate, privacy: .public) → \(newRate, privacy: .public) Hz")
+            } else {
+                log.info("Sample rate established: \(newRate, privacy: .public) Hz")
+            }
+            lastSampleRate = newRate
             onSampleRateChange?(newRate)
         }
-        lastSampleRate = newRate
 
         try super.allocateRenderResources()
     }

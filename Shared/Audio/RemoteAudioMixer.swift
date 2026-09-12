@@ -182,6 +182,23 @@ final class RemoteAudioMixer: @unchecked Sendable {
     let samplesMixedCount = Atomic<Int>(0)
     let decodeCount = Atomic<Int>(0)
     let mixCallCount = Atomic<Int>(0)
+    /// Boundary swaps where an active channel (had audio last interval) found no
+    /// decoded interval ready → a real remote-audio dropout.
+    let swapMissCount = Atomic<Int>(0)
+    /// Decodes that replaced an un-consumed pending interval → an interval piled up
+    /// and was lost (arrival clock outrunning the boundary clock).
+    let overwriteCount = Atomic<Int>(0)
+    /// Frames the render thread has actually consumed (per mixInto). Divided by
+    /// wall-clock elapsed on the main thread → the true render sample rate, which
+    /// must equal the config rate the interval math uses or the grid drifts.
+    let framesRenderedCount = Atomic<Int>(0)
+    /// Frame count (per channel) of the most recently decoded interval.
+    let lastDecodedFrames = Atomic<Int>(0)
+
+    /// Interval length (samples) the mixer is configured for. Main-thread diagnostic read.
+    func configuredIntervalLength() -> Int { _intervalLength.load(ordering: .relaxed) }
+    /// Sample rate the mixer resamples decoded audio to. Main-thread diagnostic read.
+    func configuredSampleRate() -> Int { _sampleRate.load(ordering: .relaxed) }
 
     private let logger = Logger(subsystem: "com.jamauv3", category: "RemoteAudioMixer")
 
@@ -425,7 +442,11 @@ final class RemoteAudioMixer: @unchecked Sendable {
                 buffer = PlaybackBuffer(samples: samples, channels: 1)
             }
 
-            job.playbackState.nextBuffer.withLock { $0 = buffer }
+            job.playbackState.nextBuffer.withLock { slot in
+                if slot != nil { overwriteCount.wrappingAdd(1, ordering: .relaxed) }
+                slot = buffer
+            }
+            lastDecodedFrames.store(buffer.count / max(buffer.channels, 1), ordering: .relaxed)
 
             decodeCount.wrappingAdd(1, ordering: .relaxed)
             // Signal the render/main side that at least one remote interval has decoded
@@ -483,6 +504,7 @@ final class RemoteAudioMixer: @unchecked Sendable {
         guard !shouldStop.load(ordering: .acquiring) else { return }
 
         mixCallCount.wrappingAdd(1, ordering: .relaxed)
+        framesRenderedCount.wrappingAdd(frameCount, ordering: .relaxed)
 
         // Ensure temp buffer is large enough (stereo needs 2× samples)
         ensureTempBuffer(frameCount: frameCount * 2)
@@ -501,7 +523,13 @@ final class RemoteAudioMixer: @unchecked Sendable {
         // so sample 0 lands on the downbeat — bar-locked to the metronome.
         if boundaryHit {
             for channel in renderChannels {
-                channel.currentBuffer = channel.takeNextBuffer()
+                let hadAudio = channel.currentBuffer != nil
+                let next = channel.takeNextBuffer()
+                // An active channel with nothing ready at the boundary = a real dropout.
+                if hadAudio && next == nil {
+                    swapMissCount.wrappingAdd(1, ordering: .relaxed)
+                }
+                channel.currentBuffer = next
                 bufferSwapCount.wrappingAdd(1, ordering: .relaxed)
             }
         }

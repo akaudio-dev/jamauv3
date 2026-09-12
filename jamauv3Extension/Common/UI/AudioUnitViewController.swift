@@ -94,12 +94,18 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
 				}
 			}
 
-			// Notify when host negotiates a different sample rate (e.g., DAW sample rate change)
+			// Reconcile the interval config whenever the real render rate is (re)established.
+			// Fires from allocateRenderResources (possibly off the main thread), so hop to
+			// the main actor before touching interval/mixer state. On iOS the engine starts
+			// after connect, so this is what corrects a capture that was built from the
+			// kernel's default rate before the true rate was known.
 			audioUnit.onSampleRateChange = { [weak self] newRate in
-				guard let self else { return }
-				log.debug("Host sample rate changed to \(newRate) Hz")
-				if self.intervalBuffer != nil {
-					self.updateIntervalConfig(immediate: true)
+				Task { @MainActor in
+					guard let self else { return }
+					log.debug("Render sample rate established/changed to \(newRate) Hz")
+					if self.intervalBuffer != nil {
+						self.updateIntervalConfig(immediate: true)
+					}
 				}
 			}
 			
@@ -229,6 +235,8 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
 
     private func startMixerDiagnostics() {
         diagnosticTask?.cancel()
+        var prevFramesRendered = 0
+        let windowSeconds = 5.0
         diagnosticTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(5))
@@ -237,6 +245,19 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
                 let swaps = mixer.bufferSwapCount.load(ordering: .relaxed)
                 let mixed = mixer.samplesMixedCount.load(ordering: .relaxed)
                 let mixCalls = mixer.mixCallCount.load(ordering: .relaxed)
+
+                // Clock-drift diagnostic: the render thread's TRUE sample rate is the
+                // frames it actually consumed over this window. If it differs from the
+                // config rate the interval math uses, the boundary grid drifts against
+                // remote-interval arrivals and intervals drop periodically.
+                let framesNow = mixer.framesRenderedCount.load(ordering: .relaxed)
+                let observedRate = Double(framesNow - prevFramesRendered) / windowSeconds
+                prevFramesRendered = framesNow
+                let swapMisses = mixer.swapMissCount.load(ordering: .relaxed)
+                let overwrites = mixer.overwriteCount.load(ordering: .relaxed)
+                let lastDecodedFrames = mixer.lastDecodedFrames.load(ordering: .relaxed)
+                let mixerRate = mixer.configuredSampleRate()
+                let mixerIntervalLen = mixer.configuredIntervalLength()
 
                 // Read and reset peaks from DSPKernel
                 var inputPeakStr = "n/a"
@@ -258,7 +279,19 @@ public class AudioUnitViewController: AUViewController, AUAudioUnitFactory {
                     correctedLen = kernel.correctedIntervalLength.load(ordering: .relaxed)
                 }
 
-                log.debug("Mixer stats: decodes=\(decodes) swaps=\(swaps) mixed=\(mixed) mixCalls=\(mixCalls) inPeak=\(inputPeakStr, privacy: .public) outPeak=\(outputPeakStr, privacy: .public) hostBPM=\(String(format: "%.1f", hostTempoVal), privacy: .public) correctedInterval=\(correctedLen)")
+                let configRate = (self?.audioUnit as? jamauv3ExtensionAudioUnit)?.kernel.sampleRate ?? 0
+
+                log.notice("""
+                    Mixer stats: decodes=\(decodes, privacy: .public) swaps=\(swaps, privacy: .public) \
+                    swapMisses=\(swapMisses, privacy: .public) overwrites=\(overwrites, privacy: .public) \
+                    mixed=\(mixed, privacy: .public) mixCalls=\(mixCalls, privacy: .public) \
+                    observedRenderRate=\(String(format: "%.1f", observedRate), privacy: .public) \
+                    configRate=\(String(format: "%.1f", configRate), privacy: .public) \
+                    mixerRate=\(mixerRate, privacy: .public) mixerIntervalLen=\(mixerIntervalLen, privacy: .public) \
+                    lastDecodedFrames=\(lastDecodedFrames, privacy: .public) correctedInterval=\(correctedLen, privacy: .public) \
+                    inPeak=\(inputPeakStr, privacy: .public) outPeak=\(outputPeakStr, privacy: .public) \
+                    hostBPM=\(String(format: "%.1f", hostTempoVal), privacy: .public)
+                    """)
             }
         }
     }
